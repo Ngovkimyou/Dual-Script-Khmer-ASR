@@ -1,0 +1,84 @@
+{
+  "dataset": "Digital-Divide-Data/khmer-speech-dataset",
+  "revision": "default",
+  "source_split": "train",
+  "seed": 42,
+  "shuffle_buffer": 1000,
+  "scanned_rows": 1000,
+  "candidate_groups": 758,
+  "selected_rows": 300,
+  "split_counts": {
+    "train": 251,
+    "validation": 26,
+    "test": 23
+  },
+  "speaker_counts": {
+    "train": {
+      "f-adt1-0002": 27,
+      "f-adt1-0004": 13,
+      "f-adt1-0005": 26,
+      "f-adt2-0002": 27,
+      "f-adt3-0001": 1,
+      "m-adt1-0002": 26,
+      "m-adt1-0003": 26,
+      "m-adt1-0005": 26,
+      "m-adt2-0002": 27,
+      "m-adt3-0001": 26,
+      "m-adt4-0002": 26
+    },
+    "validation": {
+      "f-adt4-0001": 26
+    },
+    "test": {
+      "m-adt1-0004": 23
+    }
+  },
+  "topic_counts": {
+    "train": {
+      "Life as a Fisherman in Cambodia": 14,
+      "Movie": 14,
+      "Recipes": 15,
+      "Social Media": 6,
+      "Traditional Occupations": 14,
+      "University": 2,
+      "Working in Cambodia": 15,
+      "Beauty Standards and Grooming Practices": 13,
+      "Cambodia’s Social and Economic Shift": 17,
+      "Everyday Bureaucracy": 17,
+      "Pursuing Hobbies": 18,
+      "Culinary Superstitions": 14,
+      "History": 14,
+      "Cambodia 10 Years Ago vs. Now": 53,
+      "Folklore Song": 12,
+      "Natural Disasters": 13
+    },
+    "validation": {
+      "Rental Living": 26
+    },
+    "test": {
+      "Social Media": 8,
+      "University": 15
+    }
+  },
+  "duration_bucket_counts": {
+    "train": {
+      "long_gt_10s": 109,
+      "medium_5_to_10s": 126,
+      "short_lt_5s": 16
+    },
+    "validation": {
+      "long_gt_10s": 26
+    },
+    "test": {
+      "short_lt_5s": 1,
+      "medium_5_to_10s": 15,
+      "long_gt_10s": 7
+    }
+  },
+  "group_overlap": {
+    "train_validation": 0,
+    "train_test": 0,
+    "validation_test": 0
+  },
+  "note": "Rows are selected with one record per group and assigned by complete speaker groups."
+}
