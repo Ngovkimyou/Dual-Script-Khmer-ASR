@@ -1,0 +1,3 @@
+# Dependencies for Dual-Script Khmer ASR project
+# Keep these separate from the existing Keyboard Transliteration Keyboard project's dependencies.
+datasets

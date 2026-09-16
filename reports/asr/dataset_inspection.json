@@ -1,0 +1,209 @@
+{
+  "dataset": "Digital-Divide-Data/khmer-speech-dataset",
+  "revision": "default",
+  "split": "train",
+  "streaming": true,
+  "audio_decode": "disabled",
+  "requested_rows": 300,
+  "inspected_rows": 300,
+  "columns": [
+    "audio",
+    "transcript",
+    "speaker_id",
+    "topic",
+    "subtopic",
+    "paragraph_id",
+    "sentence_id",
+    "duration"
+  ],
+  "features": {
+    "audio": "Audio(sampling_rate=None, decode=False, num_channels=None, stream_index=None)",
+    "transcript": "Value('string')",
+    "speaker_id": "Value('string')",
+    "topic": "Value('string')",
+    "subtopic": "Value('string')",
+    "paragraph_id": "Value('int64')",
+    "sentence_id": "Value('string')",
+    "duration": "Value('float64')"
+  },
+  "quality": {
+    "missing_audio": 0,
+    "empty_transcripts": 0,
+    "unique_normalized_transcripts": 87,
+    "duplicate_transcript_rows": 213
+  },
+  "duration_seconds": {
+    "count": 300,
+    "min": 3.077,
+    "max": 18.68,
+    "mean": 8.471,
+    "median": 8.226
+  },
+  "sampling_rates": {},
+  "speaker_counts": {
+    "f-adt1-0001": 16,
+    "m-adt1-0001": 16,
+    "m-adt2-0001": 16,
+    "f-adt2-0001": 16,
+    "f-adt1-0002": 72,
+    "m-adt1-0002": 72,
+    "f-adt2-0002": 62,
+    "m-adt2-0002": 30
+  },
+  "topic_counts": {
+    "Recipes": 300
+  },
+  "preview": [
+    {
+      "row_index": 0,
+      "transcript": "មុខម្ហូបតាមដងផ្លូវ គឺជាមុខម្ហូបមួយមានភាពសម្បូរបែប និងមានភាពងាយស្រួល ដែលគេពេញនិយមក្នុងការបរិភោគ ថែមទាំងមានតម្លៃសមរម្យ។",
+      "normalized_transcript": "មុខម្ហូបតាមដងផ្លូវ គឺជាមុខម្ហូបមួយមានភាពសម្បូរបែប និងមានភាពងាយស្រួល ដែលគេពេញនិយមក្នុងការបរិភោគ ថែមទាំងមានតម្លៃសមរម្យ។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 8.684,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0001.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 1,
+      "transcript": "នៅក្នុងប្រទេសកម្ពុជា មុខម្ហូបតាមដងផ្លូវមានប្រជាប្រិយភាពយ៉ាងខ្លាំង ហើយយើងអាចរកទិញមុខម្ហូបទាំងនោះដូចជា៖ នំបញ្ចុក ចេកចៀន បុកល្ហុង គុយទាវ ពងទាកូន បបរ នំប៉័ងដាក់សាច់ និងមានប្រភេទផ្សេងៗជាច្រើនទៀត។",
+      "normalized_transcript": "នៅក្នុងប្រទេសកម្ពុជា មុខម្ហូបតាមដងផ្លូវមានប្រជាប្រិយភាពយ៉ាងខ្លាំង ហើយយើងអាចរកទិញមុខម្ហូបទាំងនោះដូចជា៖ នំបញ្ចុក ចេកចៀន បុកល្ហុង គុយទាវ ពងទាកូន បបរ នំប៉័ងដាក់សាច់ និងមានប្រភេទផ្សេងៗជាច្រើនទៀត។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 14.571,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0002.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 2,
+      "transcript": "ម្យ៉ាងវិញទៀត អ្នកអាចរកទិញមុខម្ហូបទាំងនោះបានយ៉ាងងាយស្រួលនៅតាមដងផ្លូវ ទីផ្សារ ទីប្រជុំជន និងនៅតាមតំបន់ទេសចរណ៍នានា។",
+      "normalized_transcript": "ម្យ៉ាងវិញទៀត អ្នកអាចរកទិញមុខម្ហូបទាំងនោះបានយ៉ាងងាយស្រួលនៅតាមដងផ្លូវ ទីផ្សារ ទីប្រជុំជន និងនៅតាមតំបន់ទេសចរណ៍នានា។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 8.603,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0003.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 3,
+      "transcript": "ម្យ៉ាងទៀតម្ហូបទាំងនោះ គេតែងតែបរិភោគភាគច្រើននៅពេលព្រឹក នឹងពេលល្ងាច។",
+      "normalized_transcript": "ម្យ៉ាងទៀតម្ហូបទាំងនោះ គេតែងតែបរិភោគភាគច្រើននៅពេលព្រឹក នឹងពេលល្ងាច។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 4.876,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0004.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 4,
+      "transcript": "ដូចជានំបញ្ចុក គេពេញនិយមបរិភោគសម្រាប់អាហារពេលព្រឹក។",
+      "normalized_transcript": "ដូចជានំបញ្ចុក គេពេញនិយមបរិភោគសម្រាប់អាហារពេលព្រឹក។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 4.087,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0005.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 5,
+      "transcript": "នំបញ្ចុកត្រូវបានញ៉ាំជាមួយទឹកសម្លរខ្មែរដូចជា ទឹកសម្លរប្រហើរ ទឹកសម្លរការី ឬសម្លរណាំយ៉ា។",
+      "normalized_transcript": "នំបញ្ចុកត្រូវបានញ៉ាំជាមួយទឹកសម្លរខ្មែរដូចជា ទឹកសម្លរប្រហើរ ទឹកសម្លរការី ឬសម្លរណាំយ៉ា។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 6.409,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0006.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 6,
+      "transcript": "រីឯគុយទាវ គេច្រើនបរិភោគទាំងពេលព្រឹក និងពេលល្ងាច។",
+      "normalized_transcript": "រីឯគុយទាវ គេច្រើនបរិភោគទាំងពេលព្រឹក និងពេលល្ងាច។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 3.483,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0007.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 7,
+      "transcript": "គុយទាវមានច្រើនរសជាតិ និងច្រើនប្រភេទ ហើយយើងក៏អាចដាក់បន្ថែមដូចជា សាច់ជ្រូក សាច់គោ និងគ្រឿងសមុទ្រដើម្បីបង្កើននៅរសជាតិ។",
+      "normalized_transcript": "គុយទាវមានច្រើនរសជាតិ និងច្រើនប្រភេទ ហើយយើងក៏អាចដាក់បន្ថែមដូចជា សាច់ជ្រូក សាច់គោ និងគ្រឿងសមុទ្រដើម្បីបង្កើននៅរសជាតិ។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 8.638,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0008.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 8,
+      "transcript": "ចំណែកឯបុកល្ហុងក៏មានជាច្រើនប្រភេទដែរ ដូចជា៖ បុកក្តាមប្រៃ បុកគ្រឿងសមុទ្រ បុកពោត បុកមី។",
+      "normalized_transcript": "ចំណែកឯបុកល្ហុងក៏មានជាច្រើនប្រភេទដែរ ដូចជា៖ បុកក្តាមប្រៃ បុកគ្រឿងសមុទ្រ បុកពោត បុកមី។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 6.107,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0009.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    },
+    {
+      "row_index": 9,
+      "transcript": "ចំណែកឯ ពងទាកូន គេតែងបរិភោគនៅពេលល្ងាច ហើយគេក៏អាចដាក់ជាមួយនឹងបុកល្ហុងបានផងដែរ ដើម្បីបន្ថែមនៅរសជាតិកាន់តែឆ្ងាញ់ពិសារ។",
+      "normalized_transcript": "ចំណែកឯ ពងទាកូន គេតែងបរិភោគនៅពេលល្ងាច ហើយគេក៏អាចដាក់ជាមួយនឹងបុកល្ហុងបានផងដែរ ដើម្បីបន្ថែមនៅរសជាតិកាន់តែឆ្ងាញ់ពិសារ។",
+      "speaker_id": "f-adt1-0001",
+      "topic": "Recipes",
+      "subtopic": "Street food dishes",
+      "duration": 9.648,
+      "audio": {
+        "present": true,
+        "path": "f-adt1-0001_khm_recipes_01_0001_0010.wav",
+        "has_bytes": true,
+        "sampling_rate": null
+      }
+    }
+  ],
+  "note": "This report summarizes only the requested streamed rows; it is not a full-dataset count."
+}
