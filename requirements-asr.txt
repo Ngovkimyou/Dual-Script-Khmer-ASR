@@ -1,3 +1,9 @@
-# Dependencies for Dual-Script Khmer ASR project
-# Keep these separate from the existing Keyboard Transliteration Keyboard project's dependencies.
+# Dependencies for the Dual-Script Khmer ASR project.
+# Keep these separate from the existing Khmer Transliteration Keyboard runtime.
+# PyTorch is intentionally omitted because Colab already provides a CUDA build.
 datasets
+transformers
+soundfile
+jiwer
+accelerate
+scipy
