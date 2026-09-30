@@ -241,7 +241,12 @@ function renderSuggestions(data) {
             input.focus();
 
             if (selectedInput) {
-                await recordSelection(selectedInput, suggestion.khmer, previousKhmer);
+                await recordSelection(
+                    selectedInput,
+                    suggestion.khmer,
+                    previousKhmer,
+                    suggestion.compound_segments || []
+                );
             }
         });
 
@@ -249,7 +254,7 @@ function renderSuggestions(data) {
     }
 }
 
-async function recordSelection(query, khmer, previousKhmer) {
+async function recordSelection(query, khmer, previousKhmer, compoundSegments = []) {
     // Save personal selection and previous-word context through /api/select.
     try {
         await fetch("/api/select", {
@@ -261,6 +266,7 @@ async function recordSelection(query, khmer, previousKhmer) {
                 q: query,
                 khmer,
                 previous_khmer: previousKhmer,
+                compound_segments: compoundSegments,
             }),
         });
     } catch (error) {
