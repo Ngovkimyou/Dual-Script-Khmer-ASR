@@ -1,11 +1,12 @@
-"""FastAPI browser UI for suggestions, collection, and selection history."""
+"""FastAPI browser UI for keyboard suggestions and Khmer ASR."""
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from khmer_transliteration.collection import append_examples
+from khmer_transliteration.asr_inference import ASRService
 from khmer_transliteration.history import record_selection
 from khmer_transliteration.mapping_rules import load_mapping_rules
 from khmer_transliteration.dictionary_lookup import load_dataset
@@ -20,6 +21,7 @@ app = FastAPI(title="Khmer Transliteration Keyboard")
 dataset = load_dataset()
 rules = load_mapping_rules()
 ranking_model = load_ranking_model()
+asr_service = ASRService()
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
@@ -71,6 +73,49 @@ def suggest(
         "normalized": normalized,
         "suggestions": suggestions,
     }
+
+
+@app.get("/api/asr/status")
+def asr_status():
+    """Return ASR loading status without downloading or loading model weights."""
+    return asr_service.status()
+
+
+@app.post("/api/asr/warmup")
+def warmup_asr():
+    """Load the ASR model explicitly before recording begins."""
+    try:
+        return asr_service.warmup()
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/asr")
+async def transcribe_audio(request: Request):
+    """Transcribe a WAV request body and return Khmer plus Romanized output."""
+    audio_bytes = await request.body()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Request body must contain WAV audio.")
+
+    content_type = request.headers.get("content-type", "").lower()
+    accepted_types = (
+        "audio/wav",
+        "audio/x-wav",
+        "audio/wave",
+        "application/octet-stream",
+    )
+    if content_type and not content_type.startswith(accepted_types):
+        raise HTTPException(
+            status_code=415,
+            detail="Only WAV audio is supported for ASR requests.",
+        )
+
+    try:
+        return asr_service.transcribe_wav(audio_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/select")

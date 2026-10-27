@@ -1,10 +1,15 @@
 # Khmer Transliteration Keyboard Project State
 
 Current workspace:
-C:\Projects\Khmer-Transliteration-Keyboard
+C:\Projects\Dual-Script-Khmer-ASR
 
 Project goal:
 Build a Romanized Khmer to Khmer script input/prediction system for a Machine Learning course.
+
+Current focus:
+The keyboard remains the base application. The active extension adds Khmer ASR
+with XLS-R/Wav2Vec2, held-out evaluation, and dual-script browser output. The
+ASR workflow and current limitations are documented in `docs/asr.md`.
 
 Completed steps:
 1. Dataset prepared in `data/all_words.csv`.
@@ -140,6 +145,7 @@ Testing:
 Run:
 ```powershell
 python scripts/candidate_test_report.py
+```
 
 Then open:
 reports/candidate_test_report.html
@@ -150,7 +156,35 @@ vav should show ['v', 'av'] and ['v', 'a', 'v'].
 mj should generate plain/subscript CC candidates.
 Subscript CC should not generate muusikatoan/triisap variants.
 
-Then in the new session, say:
+## Khmer ASR extension
 
-```text
-Read PROJECT_STATE.md first, then c
+The ASR extension is implemented on branch `Application-Integration` and uses
+the pretrained `vitouphy/wav2vec2-xls-r-300m-khmer` checkpoint as its baseline
+and fine-tuning starting point.
+
+Completed ASR work:
+
+- Dataset inspection, deterministic manifest building, and manifest validation
+  scripts are in `scripts/inspect_asr_dataset.py`, `scripts/build_asr_manifest.py`,
+  and `scripts/validate_asr_manifest.py`.
+- Shared ASR logic is in `khmer_transliteration/asr_data.py`,
+  `asr_audio.py`, `asr_inference.py`, `asr_metrics.py`, and `asr_text.py`.
+- Baseline evaluation is in `scripts/run_asr_baseline.py`.
+- Fine-tuning is in `scripts/finetune_asr.py`; train/validation are used for
+  training and the test split remains held out.
+- A 1,000-row Colab pilot was fine-tuned and copied to Google Drive. The
+  original model folder is `models/khmer_xlsr_ddd_1000/`; the corrected
+  tokenizer experiment will use `models/khmer_xlsr_ddd_1000_clean/`. Both are
+  ignored by Git.
+- The FastAPI app exposes `/api/asr/status` and `POST /api/asr`.
+- The browser UI supports microphone recording or WAV upload and displays both
+  Khmer script and dictionary-backed canonical Romanized Khmer.
+- Unit tests are in `tests/`; run them with
+  `python -m unittest discover -s tests -v`.
+
+Important limitation:
+
+The Khmer-to-Romanized output is currently a dictionary-backed canonical
+approximation because reverse romanization is ambiguous. A manually verified
+Romanized evaluation subset is still needed before claiming Romanization
+accuracy. See `docs/asr.md` for the complete workflow and known limitations.

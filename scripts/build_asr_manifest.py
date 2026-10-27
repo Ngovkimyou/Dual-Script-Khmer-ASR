@@ -20,20 +20,10 @@ from khmer_transliteration.asr_text import (
     ASR_NORMALIZATION_VERSION,
     normalize_asr_text,
 )
+from khmer_transliteration.asr_data import as_number
 
 
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "data" / "voice"
-
-
-def as_number(value: Any) -> float | None:
-    """Convert a duration-like value to a finite float when possible."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number or number in (float("inf"), float("-inf")):
-        return None
-    return number
 
 
 def duration_bucket(duration: float | None) -> str:

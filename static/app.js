@@ -10,9 +10,23 @@ const countText = document.querySelector("#countText");
 const outputText = document.querySelector("#outputText");
 const modelStatus = document.querySelector("#modelStatus");
 const collectStatus = document.querySelector("#collectStatus");
+const asrStatus = document.querySelector("#asrStatus");
+const recordButton = document.querySelector("#recordButton");
+const stopRecordButton = document.querySelector("#stopRecordButton");
+const audioFileInput = document.querySelector("#audioFileInput");
+const asrKhmerOutput = document.querySelector("#asrKhmerOutput");
+const asrRomanizedOutput = document.querySelector("#asrRomanizedOutput");
 
 let activeRequest = 0;
 let lastSelectedKhmer = "";
+let recordingAudioContext = null;
+let recordingStream = null;
+let recordingSource = null;
+let recordingProcessor = null;
+let recordingSilenceGain = null;
+let recordingChunks = [];
+let isRecording = false;
+let isAsrBusy = false;
 
 // Direct keyboard conversions for non-romanized keys in the browser UI.
 const KHMER_DIGITS_BY_CODE = {
@@ -274,6 +288,217 @@ async function recordSelection(query, khmer, previousKhmer, compoundSegments = [
     }
 }
 
+function setAsrStatus(message, isError = false) {
+    if (!asrStatus) {
+        return;
+    }
+    asrStatus.textContent = message;
+    asrStatus.classList.toggle("error", isError);
+}
+
+function setAsrControls() {
+    if (!recordButton || !stopRecordButton || !audioFileInput) {
+        return;
+    }
+    recordButton.disabled = isRecording || isAsrBusy;
+    stopRecordButton.disabled = !isRecording;
+    audioFileInput.disabled = isRecording || isAsrBusy;
+}
+
+function mergeAudioChunks(chunks) {
+    const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+    const merged = new Float32Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return merged;
+}
+
+function resampleAudio(samples, sourceRate, targetRate) {
+    if (sourceRate === targetRate) {
+        return samples;
+    }
+
+    const outputLength = Math.max(1, Math.round(samples.length * targetRate / sourceRate));
+    const output = new Float32Array(outputLength);
+    const ratio = sourceRate / targetRate;
+    for (let index = 0; index < outputLength; index += 1) {
+        const sourcePosition = index * ratio;
+        const lower = Math.floor(sourcePosition);
+        const upper = Math.min(lower + 1, samples.length - 1);
+        const weight = sourcePosition - lower;
+        output[index] = samples[lower] * (1 - weight) + samples[upper] * weight;
+    }
+    return output;
+}
+
+function writeWavString(view, offset, value) {
+    for (let index = 0; index < value.length; index += 1) {
+        view.setUint8(offset + index, value.charCodeAt(index));
+    }
+}
+
+function encodeWav(samples, sampleRate) {
+    const targetRate = 16000;
+    const monoSamples = resampleAudio(samples, sampleRate, targetRate);
+    const buffer = new ArrayBuffer(44 + monoSamples.length * 2);
+    const view = new DataView(buffer);
+    writeWavString(view, 0, "RIFF");
+    view.setUint32(4, 36 + monoSamples.length * 2, true);
+    writeWavString(view, 8, "WAVE");
+    writeWavString(view, 12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, targetRate, true);
+    view.setUint32(28, targetRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeWavString(view, 36, "data");
+    view.setUint32(40, monoSamples.length * 2, true);
+
+    let offset = 44;
+    for (const sample of monoSamples) {
+        const clipped = Math.max(-1, Math.min(1, sample));
+        view.setInt16(offset, clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff, true);
+        offset += 2;
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+}
+
+async function sendAudioForTranscription(audioBlob) {
+    isAsrBusy = true;
+    setAsrControls();
+    setAsrStatus("Transcribing...");
+
+    try {
+        const response = await fetch("/api/asr", {
+            method: "POST",
+            headers: { "Content-Type": "audio/wav" },
+            body: audioBlob,
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || `Request failed: ${response.status}`);
+        }
+        asrKhmerOutput.value = data.khmer_text || "";
+        asrRomanizedOutput.value = data.romanized_text || "";
+        const latency = Number(data.latency_seconds);
+        setAsrStatus(Number.isFinite(latency) ? `Done · ${latency.toFixed(2)}s` : "Done");
+    } catch (error) {
+        setAsrStatus(error.message || "ASR request failed.", true);
+    } finally {
+        isAsrBusy = false;
+        setAsrControls();
+    }
+}
+
+async function warmUpAsrModel() {
+    if (isRecording || isAsrBusy) {
+        return;
+    }
+    isAsrBusy = true;
+    setAsrControls();
+    setAsrStatus("Loading model...");
+    try {
+        const response = await fetch("/api/asr/warmup", { method: "POST" });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || `Request failed: ${response.status}`);
+        }
+        setAsrStatus(`Model ready · ${data.device}`);
+    } catch (error) {
+        setAsrStatus(error.message || "ASR model could not be loaded.", true);
+    } finally {
+        isAsrBusy = false;
+        setAsrControls();
+    }
+}
+
+async function startRecording() {
+    if (isRecording || isAsrBusy) {
+        return;
+    }
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass || !navigator.mediaDevices?.getUserMedia) {
+        setAsrStatus("This browser does not support microphone recording.", true);
+        return;
+    }
+
+    try {
+        recordingStream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1 },
+        });
+        recordingAudioContext = new AudioContextClass();
+        recordingSource = recordingAudioContext.createMediaStreamSource(recordingStream);
+        recordingProcessor = recordingAudioContext.createScriptProcessor(4096, 1, 1);
+        recordingSilenceGain = recordingAudioContext.createGain();
+        recordingSilenceGain.gain.value = 0;
+        recordingChunks = [];
+        recordingProcessor.onaudioprocess = (event) => {
+            if (isRecording) {
+                recordingChunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+            }
+        };
+        recordingSource.connect(recordingProcessor);
+        recordingProcessor.connect(recordingSilenceGain);
+        recordingSilenceGain.connect(recordingAudioContext.destination);
+        isRecording = true;
+        setAsrStatus("Recording...");
+        setAsrControls();
+    } catch (error) {
+        if (recordingStream) {
+            recordingStream.getTracks().forEach((track) => track.stop());
+        }
+        setAsrStatus(error.message || "Microphone permission was denied.", true);
+    }
+}
+
+async function stopRecording() {
+    if (!isRecording) {
+        return;
+    }
+
+    isRecording = false;
+    const chunks = recordingChunks;
+    const sourceRate = recordingAudioContext?.sampleRate || 44100;
+    recordingProcessor?.disconnect();
+    recordingSource?.disconnect();
+    recordingSilenceGain?.disconnect();
+    recordingStream?.getTracks().forEach((track) => track.stop());
+    await recordingAudioContext?.close();
+    recordingAudioContext = null;
+    recordingProcessor = null;
+    recordingSource = null;
+    recordingSilenceGain = null;
+    recordingStream = null;
+    recordingChunks = [];
+    setAsrControls();
+
+    if (!chunks.length) {
+        setAsrStatus("No audio was recorded.", true);
+        return;
+    }
+    await sendAudioForTranscription(encodeWav(mergeAudioChunks(chunks), sourceRate));
+}
+
+function handleAudioFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) {
+        return;
+    }
+    if (!file.name.toLowerCase().endsWith(".wav")) {
+        setAsrStatus("Please select a WAV file.", true);
+        event.target.value = "";
+        return;
+    }
+    sendAudioForTranscription(file);
+    event.target.value = "";
+}
+
 async function fetchSuggestions() {
     // Send the current romanized input to /api/suggest. activeRequest prevents
     // stale responses from overwriting newer typing results.
@@ -355,5 +580,11 @@ collectButton.addEventListener("click", async () => {
         collectStatus.textContent = "Could not save candidates. Check the server console.";
     }
 });
+
+recordButton?.addEventListener("click", startRecording);
+stopRecordButton?.addEventListener("click", stopRecording);
+audioFileInput?.addEventListener("change", handleAudioFile);
+setAsrControls();
+warmUpAsrModel();
 
 renderSuggestions({ normalized: "", suggestions: [] });

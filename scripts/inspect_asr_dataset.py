@@ -19,19 +19,10 @@ from khmer_transliteration.asr_text import (
     ASR_NORMALIZATION_VERSION,
     normalize_asr_text,
 )
+from khmer_transliteration.asr_data import as_number
 
 
 DEFAULT_OUTPUT = ROOT_DIR / "reports" / "asr" / "dataset_inspection.json"
-
-
-def as_number(value: Any) -> float | None:
-    """Convert a value to a finite float when possible."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-
-    return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
 def feature_description(features: Any) -> dict[str, Any]:

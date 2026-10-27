@@ -195,6 +195,128 @@ body::after { content: ''; position: fixed; inset: 0; z-index: -2; background: r
 
 a:focus:not(:focus-visible), button:focus:not(:focus-visible), input:focus:not(:focus-visible), textarea:focus:not(:focus-visible) { outline: none; }
 
+/* ===================== SPEECH INPUT ===================== */
+.asrPanel {
+  position: relative;
+  background: var(--bg-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 32px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+}
+
+.asrPanel .panelHeader {
+  margin-bottom: 20px;
+}
+
+.asrStatus {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--success);
+}
+
+.asrStatus.error {
+  color: var(--crimson);
+}
+
+.asrControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.asrControlButton,
+.fileButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--teal-700);
+  border-radius: var(--radius-sm);
+  background: var(--teal-700);
+  color: #f7f0dd;
+  font: 500 13px var(--font-body);
+  cursor: pointer;
+  transition: var(--t-fast);
+}
+
+.asrControlButton:hover:not(:disabled),
+.fileButton:hover {
+  background: var(--teal-900);
+  border-color: var(--teal-900);
+  transform: translateY(-1px);
+}
+
+.asrControlButton.secondary {
+  background: var(--bg-paper);
+  border-color: var(--line-strong);
+  color: var(--ink-700);
+}
+
+.asrControlButton:disabled,
+.fileButton:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.fileButton input {
+  display: none;
+}
+
+.asrHint {
+  margin: 12px 0 20px;
+  color: var(--ink-500);
+  font-size: 13px;
+}
+
+.asrOutputGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.asrOutputGrid label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--ink-500);
+  font: 500 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.asrOutputGrid textarea {
+  width: 100%;
+  min-height: 94px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-paper-2);
+  color: var(--ink-900);
+  font-family: var(--font-khmer);
+  font-size: 18px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.asrOutputGrid textarea:focus {
+  border-color: var(--teal-500);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(45, 138, 147, 0.12);
+  outline: none;
+}
+
+@media (max-width: 520px) {
+  .asrPanel { padding: 20px 18px; }
+  .asrOutputGrid { grid-template-columns: 1fr; }
+  .asrControlButton, .fileButton { flex: 1; }
+}
+
 @media print { body { background: #fff !important; color: #111; } body::before, body::after, .shell::before { display: none !important; } .hero { background: var(--teal-900) !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; } .composer, .suggestionPanel, .outputPanel { background: #fff !important; box-shadow: none; border: 1px solid #ddd; } } 
 
 

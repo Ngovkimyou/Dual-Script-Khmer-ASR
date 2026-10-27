@@ -8,6 +8,11 @@ The current Windows IME uses a local named-pipe engine instead of a web port.
 The pipe engine keeps the Python rules/dictionary/model loaded in memory and
 records local user selections for personalization.
 
+The project also contains a Khmer speech-recognition extension that fine-tunes
+an XLS-R/Wav2Vec2 model and exposes Khmer plus Romanized output in the browser
+UI. See [docs/asr.md](docs/asr.md) for the dataset workflow, Colab commands,
+evaluation rules, model storage, and API details.
+
 ## Fresh Clone Setup
 
 After cloning the repo in VS Code, do these steps first.
@@ -78,14 +83,14 @@ Only do this if you want the actual Windows keyboard integration.
 Open an x64 Developer Command Prompt/PowerShell, then:
 
 ```cmd
-cd /d C:\Projects\Khmer-Transliteration-Keyboard\windows_ime\prototype
+cd /d C:\Projects\Dual-Script-Khmer-ASR\windows_ime\prototype
 build
 reregister
 check
 ```
 
 ⚠️ If your clone is in a different folder, use that folder path instead of
-`C:\Projects\Khmer-Transliteration-Keyboard`.
+`C:\Projects\Dual-Script-Khmer-ASR`.
 
 ### 6. Optional: Start Pipe Engine At Login
 
@@ -125,6 +130,8 @@ windows_ime\engine\uninstall_login_startup.cmd
   - `collection.py` - manual ranking-label CSV collection
   - `web.py` - FastAPI app implementation
   - `paths.py` - shared project paths
+- `khmer_transliteration/asr_*.py` - shared ASR data, audio, inference, metrics,
+  and normalization utilities
 - `data/` - CSV datasets and `mapping_rules.json`
   - `user_selection_history.csv` - auto-created from clicked suggestions
   - `word_pair_frequency.csv` - auto-created previous-word pair counts
@@ -135,6 +142,7 @@ windows_ime\engine\uninstall_login_startup.cmd
 - `windows_ime/` - Windows TSF IME prototype and local pipe engine
 - `app.py` - compatibility wrapper for `uvicorn app:app`
 - `docs/scoring_logic_snapshot.md` - current scoring/ranking reference
+- `docs/asr.md` - Khmer ASR preparation, fine-tuning, evaluation, and UI guide
 
 ## Common Commands
 
@@ -176,7 +184,7 @@ windows_ime\engine\uninstall_login_startup.cmd
 Rebuild/register the TSF IME from an x64 Developer shell:
 
 ```cmd
-cd /d C:\Projects\Khmer-Transliteration-Keyboard\windows_ime\prototype
+cd /d C:\Projects\Dual-Script-Khmer-ASR\windows_ime\prototype
 reregister
 ```
 

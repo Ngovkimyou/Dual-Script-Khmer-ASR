@@ -17,6 +17,33 @@
             <div class="status" id="modelStatus" style="display: none;"> model ready</div>
         </section>
 
+        <!-- Speech input uses browser-recorded WAV audio and the ASR endpoint. -->
+        <section class="asrPanel">
+            <div class="panelHeader">
+                <h2>Speech input</h2>
+                <span class="asrStatus" id="asrStatus">Ready</span>
+            </div>
+            <div class="asrControls">
+                <button class="asrControlButton" id="recordButton" type="button">Start recording</button>
+                <button class="asrControlButton secondary" id="stopRecordButton" type="button" disabled>Stop</button>
+                <label class="fileButton">
+                    Upload WAV
+                    <input id="audioFileInput" type="file" accept=".wav,audio/wav,audio/x-wav">
+                </label>
+            </div>
+            <p class="asrHint">Record a sentence or upload a WAV file. The model returns both scripts below.</p>
+            <div class="asrOutputGrid">
+                <div>
+                    <label for="asrKhmerOutput">Khmer script</label>
+                    <textarea id="asrKhmerOutput" rows="3" readonly placeholder="Khmer transcription will appear here."></textarea>
+                </div>
+                <div>
+                    <label for="asrRomanizedOutput">Romanized Khmer</label>
+                    <textarea id="asrRomanizedOutput" rows="3" readonly placeholder="Romanized output will appear here."></textarea>
+                </div>
+            </div>
+        </section>
+
         <!-- Romanized input plus collection button for manual training labels. -->
         <section class="composer">
             <label for="romanInput">Romanized input</label>

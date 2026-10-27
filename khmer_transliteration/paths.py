@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 MODELS_DIR = ROOT_DIR / "models"
+ASR_MODEL_DIR = MODELS_DIR / "khmer_xlsr_ddd_1000_clean"
+LEGACY_ASR_MODEL_DIR = MODELS_DIR / "khmer_xlsr_ddd_1000"
 STATIC_DIR = ROOT_DIR / "static"
 ASSETS_DIR = ROOT_DIR / "assets"
 REPORTS_DIR = ROOT_DIR / "reports"
