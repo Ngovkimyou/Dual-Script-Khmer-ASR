@@ -8,3 +8,4 @@ jiwer
 accelerate
 scipy
 regex
+khmercut[nn]==0.2.0

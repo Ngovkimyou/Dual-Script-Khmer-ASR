@@ -37,8 +37,11 @@ from khmer_transliteration.asr_inference import (
     transcribe,
 )
 from khmer_transliteration.asr_metrics import (
+    METRIC_SCHEMA_VERSION,
     calculate_metrics,
     calculate_prediction_diagnostics,
+    metric_definitions,
+    word_segmentation_examples,
 )
 
 
@@ -152,7 +155,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 row["audio_bytes"]
             )
             resampled_count += int(was_resampled)
-            prediction, latency, model_latency, decoder_latency = transcribe(
+            (
+                prediction,
+                latency,
+                model_latency,
+                decoder_latency,
+                filtered_unk_count,
+            ) = transcribe(
                 samples,
                 processor,
                 model,
@@ -175,6 +184,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "latency_seconds": latency,
                     "model_latency_seconds": model_latency,
                     "decoder_latency_seconds": decoder_latency,
+                    "filtered_unk_count": filtered_unk_count,
                     "audio_duration_seconds": duration,
                     "real_time_factor": latency / duration if duration and duration > 0 else None,
                 }
@@ -204,6 +214,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "manifest_dir": configuration["manifest_dir"],
         "audio_cache_dir": str(cache_dir) if cache_dir is not None else None,
         "normalization_version": ASR_NORMALIZATION_VERSION,
+        "metric_schema_version": METRIC_SCHEMA_VERSION,
+        "metric_definitions": metric_definitions(),
         "target_sample_rate": TARGET_SAMPLE_RATE,
         "requested_samples": len(manifest_rows),
         "successful_samples": len(predictions),
@@ -211,11 +223,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "resampled_count": resampled_count,
         "metrics": calculate_metrics(predictions),
         "diagnostics": calculate_prediction_diagnostics(predictions),
+        "word_segmentation_examples": word_segmentation_examples(predictions),
         "predictions": predictions,
         "errors": errors,
         "note": (
             f"Evaluation uses {args.decoder} decoding. The first inference may include "
-            "GPU warm-up overhead. beam_ctc is a no-language-model experiment."
+            "GPU warm-up overhead. beam_ctc is a no-language-model experiment. "
+            "Visible special tokens are removed before scoring; suppressed [UNK] "
+            "emissions are counted in diagnostics."
         ),
     }
     return report
@@ -240,7 +255,35 @@ def main() -> int:
     print(f"Successful samples: {report['successful_samples']}")
     print(f"Errors: {report['error_count']}")
     print(f"Resampled to 16 kHz: {report['resampled_count']}")
-    print(f"Metrics: {report['metrics']}")
+    metrics = report["metrics"]
+    print("Accuracy rates (decimal; percentage in parentheses):")
+    for label, key in (
+        ("Code-point CER", "cer"),
+        ("Grapheme-cluster CER", "grapheme_cluster_cer"),
+        ("Khmer-segmented WER", "wer"),
+        ("Legacy whitespace WER", "whitespace_wer"),
+    ):
+        value = metrics.get(key)
+        formatted = (
+            "n/a"
+            if value is None
+            else f"{value:.4f} ({value * 100:.2f}%)"
+        )
+        print(f"  {label}: {formatted}")
+    latency_values = (
+        metrics.get("mean_latency_seconds"),
+        metrics.get("median_latency_seconds"),
+        metrics.get("p95_latency_seconds"),
+    )
+    if all(value is not None for value in latency_values):
+        print(
+            "Latency: "
+            f"mean {latency_values[0]:.3f}s, "
+            f"median {latency_values[1]:.3f}s, "
+            f"p95 {latency_values[2]:.3f}s"
+        )
+    else:
+        print("Latency: unavailable")
     print(f"Diagnostics: {report['diagnostics']}")
     print(f"Saved report to: {output_path}")
     return 0 if report["successful_samples"] else 1

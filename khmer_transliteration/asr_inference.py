@@ -349,6 +349,20 @@ def resize_ctc_output_layer(model: Any, new_vocab_size: int) -> None:
         model.config.num_labels = int(new_vocab_size)
 
 
+def _count_ctc_token_runs(token_ids: Iterable[int], target_id: int | None) -> int:
+    """Count target tokens after CTC repeat collapse, before blank removal."""
+    if target_id is None:
+        return 0
+    count = 0
+    previous_id: int | None = None
+    for token_id in token_ids:
+        current_id = int(token_id)
+        if current_id == target_id and current_id != previous_id:
+            count += 1
+        previous_id = current_id
+    return count
+
+
 def load_asr_model(model_id: str | Path, device: Any) -> tuple[Any, Any]:
     """Load a CTC model and put it into inference mode."""
     try:
@@ -374,8 +388,8 @@ def transcribe(
     *,
     decoder: str = "greedy_ctc",
     beam_width: int = 10,
-) -> tuple[str, float, float, float]:
-    """Run CTC inference and return text plus timing metadata.
+) -> tuple[str, float, float, float, int]:
+    """Return decoded text, timing metadata, and the count of suppressed [UNK]s.
 
     The beam decoder is opt-in so existing application behavior remains
     unchanged. It does not use a language model; it only searches more CTC
@@ -411,7 +425,15 @@ def transcribe(
     decode_started = time.perf_counter()
     if decoder == "greedy_ctc":
         predicted_ids = torch.argmax(logits, dim=-1)
-        prediction = processor.batch_decode(predicted_ids, group_tokens=True)[0]
+        filtered_unk_count = _count_ctc_token_runs(
+            predicted_ids[0].tolist(),
+            getattr(processor.tokenizer, "unk_token_id", None),
+        )
+        prediction = processor.batch_decode(
+            predicted_ids,
+            group_tokens=True,
+            skip_special_tokens=True,
+        )[0]
     else:
         tokenizer = processor.tokenizer
         blocked_ids = {
@@ -428,10 +450,13 @@ def transcribe(
             beam_width=beam_width,
             blocked_ids=blocked_ids,
         )
+        filtered_unk_count = token_ids.count(
+            getattr(tokenizer, "unk_token_id", -1)
+        )
         prediction = tokenizer.decode(
             token_ids,
             group_tokens=False,
-            skip_special_tokens=False,
+            skip_special_tokens=True,
         )
     decode_latency = time.perf_counter() - decode_started
     return (
@@ -439,6 +464,7 @@ def transcribe(
         model_latency + decode_latency,
         model_latency,
         decode_latency,
+        filtered_unk_count,
     )
 
 
@@ -485,7 +511,13 @@ class ASRService:
 
         samples, _, original_rate, was_resampled = decode_and_resample(audio_bytes)
         self._ensure_loaded()
-        prediction, latency, model_latency, decoder_latency = transcribe(
+        (
+            prediction,
+            latency,
+            model_latency,
+            decoder_latency,
+            filtered_unk_count,
+        ) = transcribe(
             samples,
             self._processor,
             self._model,
@@ -498,6 +530,7 @@ class ASRService:
             "latency_seconds": latency,
             "model_latency_seconds": model_latency,
             "decoder_latency_seconds": decoder_latency,
+            "filtered_unk_count": filtered_unk_count,
             "sample_rate_before_resampling": original_rate,
             "resampled_to_target_rate": was_resampled,
             "model": self.model_source,

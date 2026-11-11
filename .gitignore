@@ -13,6 +13,7 @@ models/*smoke*/
 # Generated/local ASR materialization and expanded manifests.
 data/voice_1000/
 data/*/audio_cache/
+kaggle/*.zip
 
 # Personal/local keyboard learning data. Keep the .example.csv templates tracked.
 data/user_selection_history.csv

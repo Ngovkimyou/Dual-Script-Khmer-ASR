@@ -6,61 +6,26 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+from khmer_transliteration.asr_metrics import (
+    grapheme_clusters,
+    sequence_edit_distance,
+)
 
 
 COENG = "\u17d2"
 DEFAULT_REPORT = ROOT_DIR / "reports" / "asr" / "finetuned_test_clean.json"
 
 
-def grapheme_clusters(text: str) -> list[str]:
-    """Split text into user-visible Unicode grapheme clusters."""
-    try:
-        import regex
-    except ImportError as exc:
-        raise RuntimeError(
-            "The 'regex' package is required for grapheme-cluster analysis."
-        ) from exc
-    return regex.findall(r"\X", text)
-
-
-def levenshtein_distance(left: Sequence[str], right: Sequence[str]) -> int:
-    """Return the insertion/deletion/substitution distance between sequences."""
-    previous = list(range(len(right) + 1))
-    for left_index, left_item in enumerate(left, start=1):
-        current = [left_index]
-        for right_index, right_item in enumerate(right, start=1):
-            current.append(
-                min(
-                    current[-1] + 1,
-                    previous[right_index] + 1,
-                    previous[right_index - 1] + (left_item != right_item),
-                )
-            )
-        previous = current
-    return previous[-1]
-
-
-def cluster_error_rate(reference: str, prediction: str) -> float:
-    """Calculate edit rate using visible grapheme clusters as the units."""
-    reference_clusters = grapheme_clusters(reference)
-    prediction_clusters = grapheme_clusters(prediction)
-    if not reference_clusters:
-        return 0.0 if not prediction_clusters else 1.0
-    return levenshtein_distance(reference_clusters, prediction_clusters) / len(
-        reference_clusters
-    )
-
-
 def analyze_report(
     report: dict[str, Any],
     *,
-    minimum_coeng_count: int = 3,
+    minimum_coeng_count: int = 8,
     maximum_examples: int = 10,
 ) -> dict[str, Any]:
     """Summarize Unicode-cluster and coeng error patterns."""
@@ -74,7 +39,7 @@ def analyze_report(
         prediction_clusters = grapheme_clusters(prediction)
         reference_coeng = reference.count(COENG)
         prediction_coeng = prediction.count(COENG)
-        distance = levenshtein_distance(reference_clusters, prediction_clusters)
+        distance = sequence_edit_distance(reference_clusters, prediction_clusters)
         analyzed_rows.append(
             {
                 "source_row_index": row.get("source_row_index"),
@@ -155,7 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--minimum-coeng-count",
         type=int,
-        default=3,
+        default=8,
         help="Minimum reference coeng count for the subscript-heavy subset.",
     )
     parser.add_argument(

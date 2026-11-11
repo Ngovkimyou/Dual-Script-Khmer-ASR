@@ -10,8 +10,8 @@ records local user selections for personalization.
 
 The project also contains a Khmer speech-recognition extension that fine-tunes
 an XLS-R/Wav2Vec2 model and exposes Khmer plus Romanized output in the browser
-UI. See [docs/asr.md](docs/asr.md) for the dataset workflow, Colab commands,
-evaluation rules, model storage, and API details.
+UI. See [docs/asr.md](docs/asr.md) for the dataset workflow, cloud-training
+recovery, Khmer-aware evaluation, model storage, and API details.
 
 ## Fresh Clone Setup
 

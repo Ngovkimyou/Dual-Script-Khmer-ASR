@@ -9,6 +9,7 @@ for later evaluation and is never passed to Trainer during fine-tuning.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import sys
@@ -33,6 +34,11 @@ from khmer_transliteration.asr_inference import (
     resize_ctc_output_layer,
     save_clean_processor,
     validate_ctc_processor_model,
+)
+from khmer_transliteration.asr_metrics import (
+    METRIC_SCHEMA_VERSION,
+    calculate_character_metrics,
+    metric_definitions,
 )
 from khmer_transliteration.asr_text import normalize_asr_text
 
@@ -209,7 +215,6 @@ class DataCollatorCTCWithPadding:
 
 def make_compute_metrics(processor: Any) -> Any:
     import numpy as np
-    from jiwer import cer, wer
 
     def compute_metrics(prediction_output: Any) -> dict[str, float]:
         logits = prediction_output.predictions
@@ -218,23 +223,33 @@ def make_compute_metrics(processor: Any) -> Any:
         predicted_ids = np.argmax(logits, axis=-1)
         label_ids = prediction_output.label_ids.copy()
         label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
-        predictions = processor.batch_decode(predicted_ids, group_tokens=True)
-        references = processor.batch_decode(label_ids, group_tokens=False)
-        predictions = [normalize_asr_text(text) for text in predictions]
-        references = [normalize_asr_text(text) for text in references]
+        predictions = processor.batch_decode(
+            predicted_ids,
+            group_tokens=True,
+            skip_special_tokens=True,
+        )
+        references = processor.batch_decode(
+            label_ids,
+            group_tokens=False,
+            skip_special_tokens=True,
+        )
+        # Checkpoint selection uses CER, so avoid running the Khmer neural word
+        # segmenter at every periodic validation. Final test reports compute WER.
+        metrics = calculate_character_metrics(references, predictions)
         return {
-            "cer": float(cer(references, predictions)),
-            "wer": float(wer(references, predictions)),
-            "sentence_accuracy": float(
-                sum(reference == prediction for reference, prediction in zip(references, predictions))
-                / max(1, len(references))
-            ),
+            key: float(value)
+            for key, value in metrics.items()
+            if value is not None
         }
 
     return compute_metrics
 
 
-def build_training_arguments(output_dir: Path, stage: str) -> Any:
+def build_training_arguments(
+    output_dir: Path,
+    stage: str,
+    checkpoint_steps: int = 250,
+) -> Any:
     import torch
     from transformers import TrainingArguments
 
@@ -248,7 +263,9 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
         "per_device_eval_batch_size": 2,
         "gradient_accumulation_steps": 2,
         "learning_rate": 1e-5,
-        "logging_steps": 1,
+        "seed": 42,
+        "data_seed": 42,
+        "logging_steps": 25,
         "report_to": [],
         "fp16": bool(torch.cuda.is_available()),
         "dataloader_num_workers": 2,
@@ -265,6 +282,7 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
             {
                 "num_train_epochs": 1,
                 "max_steps": 5,
+                "logging_steps": 1,
                 "logging_strategy": "steps",
                 "save_strategy": "no",
             }
@@ -277,7 +295,8 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
                 "num_train_epochs": 3,
                 "max_steps": -1,
                 "logging_strategy": "steps",
-                "save_strategy": "epoch",
+                "save_strategy": "steps",
+                "save_steps": checkpoint_steps,
                 "save_total_limit": 2,
                 "load_best_model_at_end": True,
                 "metric_for_best_model": "cer",
@@ -285,9 +304,10 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
                 "gradient_checkpointing": True,
                 "group_by_length": True,
                 "length_column_name": "input_length",
+                "eval_steps": checkpoint_steps,
             }
         )
-        common[evaluation_key] = "epoch"
+        common[evaluation_key] = "steps"
     unsupported = sorted(set(common) - set(parameter_names))
     if unsupported:
         print(f"Skipping unsupported TrainingArguments options: {unsupported}")
@@ -297,15 +317,128 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
     return TrainingArguments(**supported_common)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _training_run_metadata(
+    materialized_dir: Path,
+    model_id: str,
+    processor: Any,
+    checkpoint_steps: int,
+) -> dict[str, Any]:
+    manifest_dir = materialized_dir / "manifests"
+    train_manifest = manifest_dir / "train.jsonl"
+    validation_manifest = manifest_dir / "validation.jsonl"
+    for path in (train_manifest, validation_manifest):
+        if not path.is_file():
+            raise FileNotFoundError(f"Training manifest is missing: {path}")
+
+    missing_audio: list[str] = []
+    for manifest_path in (train_manifest, validation_manifest):
+        with manifest_path.open(encoding="utf-8") as manifest_file:
+            for line_number, line in enumerate(manifest_file, start=1):
+                row = json.loads(line)
+                audio_path = Path(row["audio"])
+                if not audio_path.is_file():
+                    missing_audio.append(f"{manifest_path}:{line_number}: {audio_path}")
+                    if len(missing_audio) == 3:
+                        break
+        if len(missing_audio) == 3:
+            break
+    if missing_audio:
+        examples = "\n".join(missing_audio)
+        raise FileNotFoundError(
+            "Materialized train/validation audio is missing. Restore the "
+            "materialized_dir alongside the training checkpoints before resuming. "
+            f"Examples:\n{examples}"
+        )
+
+    vocabulary_json = json.dumps(
+        processor.tokenizer.get_vocab(),
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "schema_version": 1,
+        "model": model_id,
+        "train_manifest_sha256": _sha256_file(train_manifest),
+        "validation_manifest_sha256": _sha256_file(validation_manifest),
+        "tokenizer_vocab_sha256": hashlib.sha256(vocabulary_json).hexdigest(),
+        "tokenizer_length": len(processor.tokenizer),
+        "training_plan": {
+            "epochs": 3,
+            "per_device_train_batch_size": 2,
+            "gradient_accumulation_steps": 2,
+            "learning_rate": 1e-5,
+            "seed": 42,
+            "data_seed": 42,
+            "checkpoint_steps": checkpoint_steps,
+        },
+    }
+
+
 def train_model(
     materialized_dir: Path,
     output_dir: Path,
     model_id: str,
     stage: str,
+    *,
+    checkpoint_steps: int = 250,
+    resume: bool = False,
 ) -> None:
     from transformers import AutoModelForCTC, Trainer
+    from transformers.trainer_utils import get_last_checkpoint
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    latest_checkpoint = (
+        get_last_checkpoint(str(output_dir)) if stage == "full" else None
+    )
+    if stage == "full":
+        if resume and latest_checkpoint is None:
+            raise FileNotFoundError(
+                f"No Trainer checkpoint exists in {output_dir}; "
+                "start a fresh run without --resume."
+            )
+        if not resume and latest_checkpoint is not None:
+            raise RuntimeError(
+                f"Found an existing checkpoint in {output_dir}. Pass --resume "
+                "to continue it, or choose a new --output-dir for a fresh run."
+            )
 
     processor, extra_tokens = prepare_expanded_processor(materialized_dir, model_id)
+    resume_checkpoint: str | None = None
+    if stage == "full":
+        run_metadata = _training_run_metadata(
+            materialized_dir,
+            model_id,
+            processor,
+            checkpoint_steps,
+        )
+        metadata_path = output_dir / "training_run.json"
+        if resume:
+            if not metadata_path.is_file():
+                raise RuntimeError(
+                    "Cannot safely resume because training_run.json is missing. "
+                    "Use the original output folder or start in a new folder."
+                )
+            saved_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if saved_metadata != run_metadata:
+                raise RuntimeError(
+                    "The current model, tokenizer, data, or checkpoint interval "
+                    "does not match this checkpoint. Use a new output directory."
+                )
+            resume_checkpoint = latest_checkpoint
+            print(f"Resuming from checkpoint: {resume_checkpoint}")
+        metadata_path.write_text(
+            json.dumps(run_metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     model = AutoModelForCTC.from_pretrained(model_id)
     resize_ctc_output_layer(model, len(processor.tokenizer))
     tokenizer_diagnostics = validate_ctc_processor_model(processor, model)
@@ -330,8 +463,11 @@ def train_model(
     else:
         model.freeze_feature_extractor()
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    training_args = build_training_arguments(output_dir, stage)
+    training_args = build_training_arguments(
+        output_dir,
+        stage,
+        checkpoint_steps=checkpoint_steps,
+    )
     trainer_kwargs: dict[str, Any] = {
         "model": model,
         "args": training_args,
@@ -347,13 +483,15 @@ def train_model(
         trainer_kwargs["tokenizer"] = processor
 
     trainer = Trainer(**trainer_kwargs)
-    train_result = trainer.train()
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
     trainer.save_model(str(output_dir))
     save_clean_processor(processor, output_dir)
     evaluation = trainer.evaluate()
     summary = {
         "stage": stage,
         "model": model_id,
+        "metric_schema_version": METRIC_SCHEMA_VERSION,
+        "metric_definitions": metric_definitions(),
         "train_rows": len(dataset_dict["train"]),
         "validation_rows": len(dataset_dict["validation"]),
         "train_metrics": train_result.metrics,
@@ -371,6 +509,14 @@ def train_model(
         },
         "note": "The test split was not used during fine-tuning.",
     }
+    if stage == "full":
+        summary["checkpoint_policy"] = {
+            "save_every_steps": checkpoint_steps,
+            "evaluate_every_steps": checkpoint_steps,
+            "save_total_limit": 2,
+            "retain_best_checkpoint": True,
+            "resume_flag": "--resume",
+        }
     (output_dir / f"{stage}_training_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n",
         encoding="utf-8",
@@ -395,6 +541,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--materialized-dir", type=Path, default=DEFAULT_MATERIALIZED_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--checkpoint-steps",
+        type=int,
+        default=250,
+        help="Save a resumable checkpoint every N optimizer steps during full training.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the latest compatible Trainer checkpoint in --output-dir.",
+    )
     return parser.parse_args()
 
 
@@ -403,6 +560,10 @@ def main() -> int:
     manifest_dir = resolve_path(args.manifest_dir)
     materialized_dir = resolve_path(args.materialized_dir)
     output_dir = resolve_path(args.output_dir)
+    if args.checkpoint_steps < 1:
+        raise SystemExit("--checkpoint-steps must be at least 1")
+    if args.resume and args.stage != "full":
+        raise SystemExit("--resume is available only with --stage full")
     try:
         if args.stage == "materialize":
             materialize_dataset(manifest_dir, materialized_dir)
@@ -443,7 +604,14 @@ def main() -> int:
                     )
                 )
             else:
-                train_model(materialized_dir, output_dir, args.model, args.stage)
+                train_model(
+                    materialized_dir,
+                    output_dir,
+                    args.model,
+                    args.stage,
+                    checkpoint_steps=args.checkpoint_steps,
+                    resume=args.resume,
+                )
     except Exception as exc:
         print(f"ASR fine-tuning failed: {exc}")
         return 1
