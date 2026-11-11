@@ -6,6 +6,15 @@ __pycache__/
 tmp/
 *.log
 
+# Large ASR model artifacts are stored outside Git (for example in Drive).
+models/khmer_xlsr_ddd_*/
+models/*smoke*/
+
+# Generated/local ASR materialization and expanded manifests.
+data/voice_1000/
+data/*/audio_cache/
+kaggle/*.zip
+
 # Personal/local keyboard learning data. Keep the .example.csv templates tracked.
 data/user_selection_history.csv
 data/word_pair_frequency.csv

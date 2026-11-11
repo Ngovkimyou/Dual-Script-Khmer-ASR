@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import io
 import json
 import wave
@@ -18,39 +17,20 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from khmer_transliteration.asr_text import ASR_NORMALIZATION_VERSION, normalize_asr_text
+from khmer_transliteration.asr_data import as_number, read_manifest_rows
 
 
 DEFAULT_MANIFEST_DIR = ROOT_DIR / "data" / "voice"
 DEFAULT_OUTPUT = DEFAULT_MANIFEST_DIR / "manifest_validation.json"
 
 
-def as_number(value: Any) -> float | None:
-    """Convert a value to a finite float when possible."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number or number in (float("inf"), float("-inf")):
-        return None
-    return number
-
-
 def read_manifests(manifest_dir: Path) -> list[dict[str, Any]]:
     """Read all split CSV files from a manifest directory."""
-    rows: list[dict[str, Any]] = []
-    for split_name in ("train", "validation", "test"):
-        path = manifest_dir / f"{split_name}.csv"
-        if not path.exists():
-            raise FileNotFoundError(f"Missing manifest: {path}")
-        with path.open("r", encoding="utf-8-sig", newline="") as manifest_file:
-            for row in csv.DictReader(manifest_file):
-                row["manifest_split"] = split_name
-                try:
-                    row["source_row_index"] = int(row["source_row_index"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise ValueError(f"Invalid source_row_index in {path}: {row}") from exc
-                rows.append(row)
-    return rows
+    return [
+        row
+        for split_name in ("train", "validation", "test")
+        for row in read_manifest_rows(manifest_dir, split_name, include_split=True)
+    ]
 
 
 def read_wav_metadata(audio_bytes: bytes | None) -> dict[str, Any]:

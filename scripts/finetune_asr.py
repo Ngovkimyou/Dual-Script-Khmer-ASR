@@ -9,9 +9,8 @@ for later evaluation and is never passed to Trainer during fine-tuning.
 from __future__ import annotations
 
 import argparse
-import csv
+import hashlib
 import inspect
-import io
 import json
 import sys
 from pathlib import Path
@@ -22,65 +21,42 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from khmer_transliteration.asr_text import normalize_asr_text
-from scripts.run_asr_baseline import (
-    TARGET_SAMPLE_RATE,
-    decode_and_resample,
+from khmer_transliteration.asr_audio import TARGET_SAMPLE_RATE, decode_and_resample
+from khmer_transliteration.asr_data import (
+    load_manifest_configuration,
+    read_manifest_rows,
+    resolve_path,
     stream_selected_audio,
 )
+from khmer_transliteration.asr_inference import (
+    DEFAULT_MODEL_ID,
+    load_processor,
+    resize_ctc_output_layer,
+    save_clean_processor,
+    validate_ctc_processor_model,
+)
+from khmer_transliteration.asr_metrics import (
+    METRIC_SCHEMA_VERSION,
+    calculate_character_metrics,
+    metric_definitions,
+)
+from khmer_transliteration.asr_text import normalize_asr_text
 
 
-DEFAULT_MODEL = "vitouphy/wav2vec2-xls-r-300m-khmer"
+DEFAULT_MODEL = DEFAULT_MODEL_ID
 DEFAULT_MANIFEST_DIR = ROOT_DIR / "data" / "voice_1000"
 DEFAULT_MATERIALIZED_DIR = DEFAULT_MANIFEST_DIR / "materialized_training"
-DEFAULT_OUTPUT_DIR = ROOT_DIR / "models" / "khmer_xlsr_ddd_1000"
-
-
-def resolve_path(path: Path) -> Path:
-    return path if path.is_absolute() else ROOT_DIR / path
-
-
-def read_manifest_rows(manifest_dir: Path, split: str) -> list[dict[str, Any]]:
-    path = manifest_dir / f"{split}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Missing manifest: {path}")
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8-sig", newline="") as manifest_file:
-        for row in csv.DictReader(manifest_file):
-            try:
-                row["source_row_index"] = int(row["source_row_index"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid source_row_index in {path}: {row}") from exc
-            row["manifest_split"] = split
-            rows.append(row)
-    if not rows:
-        raise ValueError(f"Manifest is empty: {path}")
-    return rows
-
-
-def load_stream_configuration(manifest_dir: Path) -> dict[str, Any]:
-    summary_path = manifest_dir / "manifest_summary.json"
-    if not summary_path.exists():
-        raise FileNotFoundError(f"Missing manifest summary: {summary_path}")
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    return {
-        "dataset": summary["dataset"],
-        "source_split": summary.get("source_split", "train"),
-        "revision": summary.get("revision"),
-        "seed": int(summary["seed"]),
-        "shuffle_buffer": int(summary["shuffle_buffer"]),
-    }
+DEFAULT_OUTPUT_DIR = ROOT_DIR / "models" / "khmer_xlsr_ddd_1000_clean"
 
 
 def materialize_dataset(manifest_dir: Path, output_dir: Path) -> None:
     """Fetch manifest audio once and write local WAV files plus JSONL manifests."""
-    configuration = load_stream_configuration(manifest_dir)
+    configuration = load_manifest_configuration(manifest_dir)
     all_rows: list[dict[str, Any]] = []
     for split in ("train", "validation", "test"):
-        all_rows.extend(read_manifest_rows(manifest_dir, split))
+        all_rows.extend(read_manifest_rows(manifest_dir, split, include_split=True))
 
-    selected_rows = stream_selected_audio(configuration, all_rows)
+    selected_audio = stream_selected_audio(configuration, all_rows)
     audio_root = output_dir / "audio"
     manifest_root = output_dir / "manifests"
     audio_root.mkdir(parents=True, exist_ok=True)
@@ -91,7 +67,7 @@ def materialize_dataset(manifest_dir: Path, output_dir: Path) -> None:
         "test": [],
     }
 
-    for row in selected_rows:
+    for row in selected_audio:
         split = row["manifest_split"]
         source_index = int(row["source_row_index"])
         split_audio_dir = audio_root / split
@@ -131,19 +107,6 @@ def materialize_dataset(manifest_dir: Path, output_dir: Path) -> None:
     print(f"Counts: {metadata['counts']}")
 
 
-def load_processor(model_id: str) -> Any:
-    from transformers import AutoFeatureExtractor, AutoTokenizer, Wav2Vec2Processor
-
-    # Use greedy CTC components. This avoids the optional KenLM processor
-    # published with the checkpoint and keeps the training environment simple.
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    return Wav2Vec2Processor(
-        feature_extractor=feature_extractor,
-        tokenizer=tokenizer,
-    )
-
-
 def load_datasets(materialized_dir: Path, processor: Any) -> Any:
     from datasets import load_dataset
 
@@ -161,10 +124,19 @@ def load_datasets(materialized_dir: Path, processor: Any) -> Any:
             samples,
             sampling_rate=TARGET_SAMPLE_RATE,
         )
-        # Recent Transformers versions removed as_target_processor(). The
-        # tokenizer is the target-side processor for CTC labels, so calling it
-        # directly works across both older and newer versions.
-        labels = processor.tokenizer(example["transcript"]).input_ids
+        # CTC targets are ordinary character IDs. Do not add BOS/EOS or any
+        # other special tokens to the target sequence.
+        labels = processor.tokenizer(
+            example["transcript"],
+            add_special_tokens=False,
+        ).input_ids
+        if labels and isinstance(labels[0], list):
+            labels = labels[0]
+        if " " in example["transcript"] and processor.tokenizer.word_delimiter_token_id not in labels:
+            raise RuntimeError(
+                "A transcript contains spaces, but the tokenizer did not encode "
+                "the '|' word-delimiter token."
+            )
         return {
             "input_values": inputs.input_values[0],
             "input_length": len(inputs.input_values[0]),
@@ -177,6 +149,39 @@ def load_datasets(materialized_dir: Path, processor: Any) -> Any:
         remove_columns=columns,
         desc="Preparing audio and CTC labels",
     )
+
+
+def collect_training_extra_tokens(materialized_dir: Path, model_id: str) -> list[str]:
+    """Collect OOV characters from train/validation only.
+
+    The test transcripts are deliberately excluded so vocabulary construction
+    cannot inspect test text. Existing model token IDs remain unchanged.
+    """
+    base_processor = load_processor(model_id)
+    base_vocabulary = set(base_processor.tokenizer.get_vocab())
+    characters: set[str] = set()
+    for split in ("train", "validation"):
+        manifest_path = materialized_dir / "manifests" / f"{split}.jsonl"
+        with manifest_path.open(encoding="utf-8") as manifest_file:
+            for line in manifest_file:
+                row = json.loads(line)
+                transcript = normalize_asr_text(row.get("transcript") or "")
+                characters.update(
+                    character
+                    for character in transcript
+                    if character != " " and character not in base_vocabulary
+                )
+    return sorted(characters, key=lambda value: (ord(value), value))
+
+
+def prepare_expanded_processor(
+    materialized_dir: Path,
+    model_id: str,
+) -> tuple[Any, list[str]]:
+    """Build the tokenizer using only train/validation transcript characters."""
+    extra_tokens = collect_training_extra_tokens(materialized_dir, model_id)
+    processor = load_processor(model_id, extra_tokens=extra_tokens)
+    return processor, extra_tokens
 
 
 class DataCollatorCTCWithPadding:
@@ -210,7 +215,6 @@ class DataCollatorCTCWithPadding:
 
 def make_compute_metrics(processor: Any) -> Any:
     import numpy as np
-    from jiwer import cer, wer
 
     def compute_metrics(prediction_output: Any) -> dict[str, float]:
         logits = prediction_output.predictions
@@ -219,23 +223,33 @@ def make_compute_metrics(processor: Any) -> Any:
         predicted_ids = np.argmax(logits, axis=-1)
         label_ids = prediction_output.label_ids.copy()
         label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
-        predictions = processor.batch_decode(predicted_ids, group_tokens=True)
-        references = processor.batch_decode(label_ids, group_tokens=False)
-        predictions = [normalize_asr_text(text) for text in predictions]
-        references = [normalize_asr_text(text) for text in references]
+        predictions = processor.batch_decode(
+            predicted_ids,
+            group_tokens=True,
+            skip_special_tokens=True,
+        )
+        references = processor.batch_decode(
+            label_ids,
+            group_tokens=False,
+            skip_special_tokens=True,
+        )
+        # Checkpoint selection uses CER, so avoid running the Khmer neural word
+        # segmenter at every periodic validation. Final test reports compute WER.
+        metrics = calculate_character_metrics(references, predictions)
         return {
-            "cer": float(cer(references, predictions)),
-            "wer": float(wer(references, predictions)),
-            "sentence_accuracy": float(
-                sum(reference == prediction for reference, prediction in zip(references, predictions))
-                / max(1, len(references))
-            ),
+            key: float(value)
+            for key, value in metrics.items()
+            if value is not None
         }
 
     return compute_metrics
 
 
-def build_training_arguments(output_dir: Path, stage: str) -> Any:
+def build_training_arguments(
+    output_dir: Path,
+    stage: str,
+    checkpoint_steps: int = 250,
+) -> Any:
     import torch
     from transformers import TrainingArguments
 
@@ -249,7 +263,9 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
         "per_device_eval_batch_size": 2,
         "gradient_accumulation_steps": 2,
         "learning_rate": 1e-5,
-        "logging_steps": 1,
+        "seed": 42,
+        "data_seed": 42,
+        "logging_steps": 25,
         "report_to": [],
         "fp16": bool(torch.cuda.is_available()),
         "dataloader_num_workers": 2,
@@ -266,6 +282,7 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
             {
                 "num_train_epochs": 1,
                 "max_steps": 5,
+                "logging_steps": 1,
                 "logging_strategy": "steps",
                 "save_strategy": "no",
             }
@@ -278,7 +295,8 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
                 "num_train_epochs": 3,
                 "max_steps": -1,
                 "logging_strategy": "steps",
-                "save_strategy": "epoch",
+                "save_strategy": "steps",
+                "save_steps": checkpoint_steps,
                 "save_total_limit": 2,
                 "load_best_model_at_end": True,
                 "metric_for_best_model": "cer",
@@ -286,9 +304,10 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
                 "gradient_checkpointing": True,
                 "group_by_length": True,
                 "length_column_name": "input_length",
+                "eval_steps": checkpoint_steps,
             }
         )
-        common[evaluation_key] = "epoch"
+        common[evaluation_key] = "steps"
     unsupported = sorted(set(common) - set(parameter_names))
     if unsupported:
         print(f"Skipping unsupported TrainingArguments options: {unsupported}")
@@ -298,15 +317,137 @@ def build_training_arguments(output_dir: Path, stage: str) -> Any:
     return TrainingArguments(**supported_common)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _training_run_metadata(
+    materialized_dir: Path,
+    model_id: str,
+    processor: Any,
+    checkpoint_steps: int,
+) -> dict[str, Any]:
+    manifest_dir = materialized_dir / "manifests"
+    train_manifest = manifest_dir / "train.jsonl"
+    validation_manifest = manifest_dir / "validation.jsonl"
+    for path in (train_manifest, validation_manifest):
+        if not path.is_file():
+            raise FileNotFoundError(f"Training manifest is missing: {path}")
+
+    missing_audio: list[str] = []
+    for manifest_path in (train_manifest, validation_manifest):
+        with manifest_path.open(encoding="utf-8") as manifest_file:
+            for line_number, line in enumerate(manifest_file, start=1):
+                row = json.loads(line)
+                audio_path = Path(row["audio"])
+                if not audio_path.is_file():
+                    missing_audio.append(f"{manifest_path}:{line_number}: {audio_path}")
+                    if len(missing_audio) == 3:
+                        break
+        if len(missing_audio) == 3:
+            break
+    if missing_audio:
+        examples = "\n".join(missing_audio)
+        raise FileNotFoundError(
+            "Materialized train/validation audio is missing. Restore the "
+            "materialized_dir alongside the training checkpoints before resuming. "
+            f"Examples:\n{examples}"
+        )
+
+    vocabulary_json = json.dumps(
+        processor.tokenizer.get_vocab(),
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "schema_version": 1,
+        "model": model_id,
+        "train_manifest_sha256": _sha256_file(train_manifest),
+        "validation_manifest_sha256": _sha256_file(validation_manifest),
+        "tokenizer_vocab_sha256": hashlib.sha256(vocabulary_json).hexdigest(),
+        "tokenizer_length": len(processor.tokenizer),
+        "training_plan": {
+            "epochs": 3,
+            "per_device_train_batch_size": 2,
+            "gradient_accumulation_steps": 2,
+            "learning_rate": 1e-5,
+            "seed": 42,
+            "data_seed": 42,
+            "checkpoint_steps": checkpoint_steps,
+        },
+    }
+
+
 def train_model(
     materialized_dir: Path,
     output_dir: Path,
     model_id: str,
     stage: str,
+    *,
+    checkpoint_steps: int = 250,
+    resume: bool = False,
 ) -> None:
     from transformers import AutoModelForCTC, Trainer
+    from transformers.trainer_utils import get_last_checkpoint
 
-    processor = load_processor(model_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    latest_checkpoint = (
+        get_last_checkpoint(str(output_dir)) if stage == "full" else None
+    )
+    if stage == "full":
+        if resume and latest_checkpoint is None:
+            raise FileNotFoundError(
+                f"No Trainer checkpoint exists in {output_dir}; "
+                "start a fresh run without --resume."
+            )
+        if not resume and latest_checkpoint is not None:
+            raise RuntimeError(
+                f"Found an existing checkpoint in {output_dir}. Pass --resume "
+                "to continue it, or choose a new --output-dir for a fresh run."
+            )
+
+    processor, extra_tokens = prepare_expanded_processor(materialized_dir, model_id)
+    resume_checkpoint: str | None = None
+    if stage == "full":
+        run_metadata = _training_run_metadata(
+            materialized_dir,
+            model_id,
+            processor,
+            checkpoint_steps,
+        )
+        metadata_path = output_dir / "training_run.json"
+        if resume:
+            if not metadata_path.is_file():
+                raise RuntimeError(
+                    "Cannot safely resume because training_run.json is missing. "
+                    "Use the original output folder or start in a new folder."
+                )
+            saved_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if saved_metadata != run_metadata:
+                raise RuntimeError(
+                    "The current model, tokenizer, data, or checkpoint interval "
+                    "does not match this checkpoint. Use a new output directory."
+                )
+            resume_checkpoint = latest_checkpoint
+            print(f"Resuming from checkpoint: {resume_checkpoint}")
+        metadata_path.write_text(
+            json.dumps(run_metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    model = AutoModelForCTC.from_pretrained(model_id)
+    resize_ctc_output_layer(model, len(processor.tokenizer))
+    tokenizer_diagnostics = validate_ctc_processor_model(processor, model)
+    print("Tokenizer/model validation:")
+    print(json.dumps(tokenizer_diagnostics, ensure_ascii=False, indent=2))
+    print(
+        "Vocabulary expansion: "
+        f"added {len(extra_tokens)} train/validation characters"
+    )
     dataset_dict = load_datasets(materialized_dir, processor)
     if stage == "smoke":
         dataset_dict["train"] = dataset_dict["train"].select(
@@ -316,15 +457,17 @@ def train_model(
             range(min(4, len(dataset_dict["validation"])))
         )
 
-    model = AutoModelForCTC.from_pretrained(model_id)
     model.config.ctc_loss_reduction = "mean"
     if hasattr(model, "freeze_feature_encoder"):
         model.freeze_feature_encoder()
     else:
         model.freeze_feature_extractor()
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    training_args = build_training_arguments(output_dir, stage)
+    training_args = build_training_arguments(
+        output_dir,
+        stage,
+        checkpoint_steps=checkpoint_steps,
+    )
     trainer_kwargs: dict[str, Any] = {
         "model": model,
         "args": training_args,
@@ -340,19 +483,40 @@ def train_model(
         trainer_kwargs["tokenizer"] = processor
 
     trainer = Trainer(**trainer_kwargs)
-    train_result = trainer.train()
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
     trainer.save_model(str(output_dir))
-    processor.save_pretrained(str(output_dir))
+    save_clean_processor(processor, output_dir)
     evaluation = trainer.evaluate()
     summary = {
         "stage": stage,
         "model": model_id,
+        "metric_schema_version": METRIC_SCHEMA_VERSION,
+        "metric_definitions": metric_definitions(),
         "train_rows": len(dataset_dict["train"]),
         "validation_rows": len(dataset_dict["validation"]),
         "train_metrics": train_result.metrics,
         "validation_metrics": evaluation,
+        "tokenizer": tokenizer_diagnostics,
+        "label_encoding": {
+            "add_special_tokens": False,
+            "word_delimiter_token": processor.tokenizer.word_delimiter_token,
+            "word_delimiter_token_id": processor.tokenizer.word_delimiter_token_id,
+        },
+        "vocabulary_expansion": {
+            "source_splits": ["train", "validation"],
+            "added_count": len(extra_tokens),
+            "added_tokens": extra_tokens,
+        },
         "note": "The test split was not used during fine-tuning.",
     }
+    if stage == "full":
+        summary["checkpoint_policy"] = {
+            "save_every_steps": checkpoint_steps,
+            "evaluate_every_steps": checkpoint_steps,
+            "save_total_limit": 2,
+            "retain_best_checkpoint": True,
+            "resume_flag": "--resume",
+        }
     (output_dir / f"{stage}_training_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n",
         encoding="utf-8",
@@ -362,11 +526,32 @@ def train_model(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fine-tune Khmer XLS-R on ASR manifests.")
-    parser.add_argument("--stage", choices=("materialize", "smoke", "full"), required=True)
+    parser.add_argument(
+        "--stage",
+        choices=(
+            "materialize",
+            "validate-tokenizer",
+            "validate-vocabulary",
+            "smoke",
+            "full",
+        ),
+        required=True,
+    )
     parser.add_argument("--manifest-dir", type=Path, default=DEFAULT_MANIFEST_DIR)
     parser.add_argument("--materialized-dir", type=Path, default=DEFAULT_MATERIALIZED_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--checkpoint-steps",
+        type=int,
+        default=250,
+        help="Save a resumable checkpoint every N optimizer steps during full training.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the latest compatible Trainer checkpoint in --output-dir.",
+    )
     return parser.parse_args()
 
 
@@ -375,15 +560,58 @@ def main() -> int:
     manifest_dir = resolve_path(args.manifest_dir)
     materialized_dir = resolve_path(args.materialized_dir)
     output_dir = resolve_path(args.output_dir)
+    if args.checkpoint_steps < 1:
+        raise SystemExit("--checkpoint-steps must be at least 1")
+    if args.resume and args.stage != "full":
+        raise SystemExit("--resume is available only with --stage full")
     try:
         if args.stage == "materialize":
             materialize_dataset(manifest_dir, materialized_dir)
+        elif args.stage == "validate-tokenizer":
+            from transformers import AutoModelForCTC
+
+            model = AutoModelForCTC.from_pretrained(args.model)
+            processor = load_processor(args.model)
+            diagnostics = validate_ctc_processor_model(processor, model)
+            print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
         else:
             if not (materialized_dir / "manifests" / "train.jsonl").exists():
                 raise FileNotFoundError(
                     "Training manifests are missing. Run with --stage materialize first."
                 )
-            train_model(materialized_dir, output_dir, args.model, args.stage)
+            if args.stage == "validate-vocabulary":
+                from transformers import AutoModelForCTC
+
+                processor, extra_tokens = prepare_expanded_processor(
+                    materialized_dir,
+                    args.model,
+                )
+                model = AutoModelForCTC.from_pretrained(args.model)
+                resize_ctc_output_layer(model, len(processor.tokenizer))
+                diagnostics = validate_ctc_processor_model(processor, model)
+                print(
+                    json.dumps(
+                        {
+                            "tokenizer": diagnostics,
+                            "vocabulary_expansion": {
+                                "source_splits": ["train", "validation"],
+                                "added_count": len(extra_tokens),
+                                "added_tokens": extra_tokens,
+                            },
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                train_model(
+                    materialized_dir,
+                    output_dir,
+                    args.model,
+                    args.stage,
+                    checkpoint_steps=args.checkpoint_steps,
+                    resume=args.resume,
+                )
     except Exception as exc:
         print(f"ASR fine-tuning failed: {exc}")
         return 1

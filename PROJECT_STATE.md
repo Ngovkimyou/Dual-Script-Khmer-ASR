@@ -1,10 +1,15 @@
 # Khmer Transliteration Keyboard Project State
 
 Current workspace:
-C:\Projects\Khmer-Transliteration-Keyboard
+C:\Projects\Dual-Script-Khmer-ASR
 
 Project goal:
 Build a Romanized Khmer to Khmer script input/prediction system for a Machine Learning course.
+
+Current focus:
+The keyboard remains the base application. The active extension adds Khmer ASR
+with XLS-R/Wav2Vec2, held-out evaluation, and dual-script browser output. The
+ASR workflow and current limitations are documented in `docs/asr.md`.
 
 Completed steps:
 1. Dataset prepared in `data/all_words.csv`.
@@ -140,6 +145,7 @@ Testing:
 Run:
 ```powershell
 python scripts/candidate_test_report.py
+```
 
 Then open:
 reports/candidate_test_report.html
@@ -150,7 +156,56 @@ vav should show ['v', 'av'] and ['v', 'a', 'v'].
 mj should generate plain/subscript CC candidates.
 Subscript CC should not generate muusikatoan/triisap variants.
 
-Then in the new session, say:
+## Khmer ASR extension
 
-```text
-Read PROJECT_STATE.md first, then c
+The ASR extension is implemented on branch `Application-Integration` and uses
+the pretrained `vitouphy/wav2vec2-xls-r-300m-khmer` checkpoint as its baseline
+and fine-tuning starting point.
+
+Completed ASR work:
+
+- Dataset inspection, deterministic manifest building, and manifest validation
+  scripts are in `scripts/inspect_asr_dataset.py`, `scripts/build_asr_manifest.py`,
+  and `scripts/validate_asr_manifest.py`. `scripts/package_kaggle_asr.py`
+  creates the one-file source bundle for the Kaggle training notebook.
+- Shared ASR logic is in `khmer_transliteration/asr_data.py`,
+  `asr_audio.py`, `asr_decoding.py`, `asr_inference.py`,
+  `asr_metrics.py`, and `asr_text.py`.
+- Baseline evaluation is in `scripts/run_asr_baseline.py`.
+- Saved prediction reports can be rescored with
+  `scripts/score_asr_report.py`, without downloading audio or loading an ASR
+  checkpoint.
+- Fine-tuning is in `scripts/finetune_asr.py`; train/validation are used for
+  training and the test split remains held out.
+- Full training now saves step checkpoints and can resume after checking that
+  the model, tokenizer, and train/validation manifests match. The checkpoint
+  folder must itself be persisted outside an ephemeral runtime.
+- Existing 1,000-row reports and their Khmer-aware rescored copies are in
+  `reports/asr/`. On the same 126 held-out samples, the pretrained baseline
+  scored 34.89% code-point CER and 70.28% Khmer-aware WER; the clean fine-tuned
+  model scored 17.66% CER and 46.35% WER. These are decimal error rates shown
+  as percentages. The old whitespace WERs (593.25% and 102.41%) are retained
+  only as legacy fields and should not be presented as Khmer word-level WER.
+  The Khmer WER depends on `khmercut.nn` segmentation and remains provisional
+  for this speech-text domain. The completed 30-row diagnostic audit measured
+  43.67% manually segmented WER and 50.78% automatic WER on the same selected
+  rows; this sample is not an overall test-set estimate. No further manual
+  audit is planned for the next run.
+- The attempted 5,000-row Colab run did not finish or retain its checkpoint.
+- `notebooks/finetune_asr_kaggle.ipynb` prepares the 5,000-row Kaggle run. Its
+  manifest keeps the original 126-row test set unchanged and excludes its
+  speakers and transcript groups from new train/validation rows. The 5,000-row
+  target includes the test rows. See `kaggle/README.md` for preparing the
+  one-file source bundle, running the notebook, and retaining checkpoints.
+- The FastAPI app exposes `/api/asr/status` and `POST /api/asr`.
+- The browser UI supports microphone recording or WAV upload and displays both
+  Khmer script and dictionary-backed canonical Romanized Khmer.
+- Unit tests are in `tests/`; run them with
+  `python -m unittest discover -s tests -v`.
+
+Important limitation:
+
+The Khmer-to-Romanized output is currently a dictionary-backed canonical
+approximation because reverse romanization is ambiguous. A manually verified
+Romanized evaluation subset is still needed before claiming Romanization
+accuracy. See `docs/asr.md` for the complete workflow and known limitations.

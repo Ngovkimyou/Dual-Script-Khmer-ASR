@@ -9,13 +9,8 @@ inference with a Wav2Vec2/XLS-R CTC checkpoint.
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
-import math
-import statistics
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +23,29 @@ from khmer_transliteration.asr_text import (
     ASR_NORMALIZATION_VERSION,
     normalize_asr_text,
 )
+from khmer_transliteration.asr_audio import TARGET_SAMPLE_RATE, decode_and_resample
+from khmer_transliteration.asr_data import (
+    load_manifest_configuration,
+    read_manifest_rows,
+    resolve_path,
+    stream_selected_audio,
+)
+from khmer_transliteration.asr_inference import (
+    DEFAULT_MODEL_ID,
+    load_asr_model,
+    resolve_device,
+    transcribe,
+)
+from khmer_transliteration.asr_metrics import (
+    METRIC_SCHEMA_VERSION,
+    calculate_metrics,
+    calculate_prediction_diagnostics,
+    metric_definitions,
+    word_segmentation_examples,
+)
 
 
-DEFAULT_MODEL = "vitouphy/wav2vec2-xls-r-300m-khmer"
-TARGET_SAMPLE_RATE = 16_000
+DEFAULT_MODEL = DEFAULT_MODEL_ID
 DEFAULT_MANIFEST_DIR = ROOT_DIR / "data" / "voice_1000"
 DEFAULT_OUTPUT = ROOT_DIR / "reports" / "asr" / "baseline_smoke_test.json"
 
@@ -49,6 +63,18 @@ def parse_args() -> argparse.Namespace:
         help="Number of manifest rows to evaluate; use 0 for the entire split.",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--decoder",
+        choices=("greedy_ctc", "beam_ctc"),
+        default="greedy_ctc",
+        help="CTC decoder; beam_ctc is a no-language-model experiment.",
+    )
+    parser.add_argument(
+        "--beam-width",
+        type=int,
+        default=10,
+        help="Number of prefixes retained by beam_ctc (default: 10).",
+    )
     parser.add_argument("--dataset", help="Override the dataset ID from manifest_summary.json.")
     parser.add_argument("--revision", help="Override the dataset revision from the summary.")
     parser.add_argument("--seed", type=int, help="Override the stream shuffle seed.")
@@ -58,289 +84,91 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Inference device: auto, cpu, or cuda (default: auto).",
     )
+    parser.add_argument(
+        "--audio-cache-dir",
+        type=Path,
+        help="Local cache for selected WAV files (default: <manifest-dir>/audio_cache).",
+    )
+    parser.add_argument(
+        "--no-audio-cache",
+        action="store_true",
+        help="Disable local audio caching for this run.",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     if args.max_samples < 0:
         parser.error("--max-samples must be zero or greater")
     if args.device not in {"auto", "cpu", "cuda"}:
         parser.error("--device must be auto, cpu, or cuda")
+    if args.beam_width < 1:
+        parser.error("--beam-width must be at least 1")
     return args
-
-
-def resolve_path(path: Path) -> Path:
-    return path if path.is_absolute() else ROOT_DIR / path
-
-
-def read_manifest_rows(manifest_dir: Path, split: str) -> list[dict[str, Any]]:
-    path = manifest_dir / f"{split}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Missing manifest: {path}")
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8-sig", newline="") as manifest_file:
-        for row in csv.DictReader(manifest_file):
-            try:
-                row["source_row_index"] = int(row["source_row_index"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid source_row_index in {path}: {row}") from exc
-            rows.append(row)
-    if not rows:
-        raise ValueError(f"Manifest is empty: {path}")
-    return rows
 
 
 def load_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     manifest_dir = resolve_path(args.manifest_dir)
-    summary_path = manifest_dir / "manifest_summary.json"
-    if not summary_path.exists():
-        raise FileNotFoundError(f"Missing manifest summary: {summary_path}")
-
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     rows = read_manifest_rows(manifest_dir, args.split)
     if args.max_samples:
         rows = rows[: args.max_samples]
 
-    configuration = {
-        "manifest_dir": str(manifest_dir),
-        "dataset": args.dataset or summary["dataset"],
-        "source_split": summary.get("source_split", "train"),
-        "revision": args.revision or summary.get("revision"),
-        "seed": args.seed if args.seed is not None else int(summary["seed"]),
-        "shuffle_buffer": (
-            args.shuffle_buffer
-            if args.shuffle_buffer is not None
-            else int(summary["shuffle_buffer"])
-        ),
-    }
-    if configuration["shuffle_buffer"] < 1:
-        raise ValueError("shuffle_buffer must be at least 1")
+    configuration = load_manifest_configuration(
+        manifest_dir,
+        dataset=args.dataset,
+        revision=args.revision,
+        seed=args.seed,
+        shuffle_buffer=args.shuffle_buffer,
+    )
     return configuration, rows
-
-
-def stream_selected_audio(
-    configuration: dict[str, Any],
-    manifest_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Replay the manifest stream and return bytes for selected rows."""
-    try:
-        from datasets import Audio, load_dataset
-    except ImportError as exc:
-        raise RuntimeError(
-            "The 'datasets' package is required. Install requirements-asr.txt first."
-        ) from exc
-
-    load_kwargs: dict[str, Any] = {
-        "path": configuration["dataset"],
-        "split": configuration["source_split"],
-        "streaming": True,
-    }
-    if configuration["revision"] and configuration["revision"] != "default":
-        load_kwargs["revision"] = configuration["revision"]
-
-    dataset = load_dataset(**load_kwargs)
-    dataset = dataset.cast_column("audio", Audio(decode=False))
-    shuffled = dataset.shuffle(
-        seed=configuration["seed"],
-        buffer_size=configuration["shuffle_buffer"],
-    )
-
-    by_index = {row["source_row_index"]: row for row in manifest_rows}
-    max_index = max(by_index)
-    found: list[dict[str, Any]] = []
-    found_indices: set[int] = set()
-
-    for stream_index, row in enumerate(shuffled.take(max_index + 1)):
-        if stream_index not in by_index:
-            continue
-        audio = row.get("audio") if isinstance(row.get("audio"), dict) else {}
-        audio_bytes = audio.get("bytes")
-        if not audio_bytes:
-            raise RuntimeError(
-                f"Audio bytes were unavailable for source row {stream_index} "
-                f"({audio.get('path', 'unknown path')})."
-            )
-        selected = dict(by_index[stream_index])
-        selected["audio_bytes"] = bytes(audio_bytes)
-        selected["source_audio_path"] = str(audio.get("path") or "")
-        found.append(selected)
-        found_indices.add(stream_index)
-
-    missing = sorted(set(by_index) - found_indices)
-    if missing:
-        raise RuntimeError(
-            "Could not replay all selected manifest rows. "
-            f"Missing source indexes: {missing[:10]}"
-        )
-    return found
-
-
-def decode_and_resample(audio_bytes: bytes) -> tuple[Any, int, int, bool]:
-    """Decode WAV bytes and resample to the model's required rate."""
-    try:
-        import numpy as np
-        import soundfile as sf
-        from scipy.signal import resample_poly
-    except ImportError as exc:
-        raise RuntimeError(
-            "Install soundfile and scipy before running ASR inference."
-        ) from exc
-
-    samples, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
-    samples = np.asarray(samples, dtype=np.float32)
-    if samples.ndim == 2:
-        samples = samples.mean(axis=1)
-    if samples.ndim != 1 or samples.size == 0:
-        raise ValueError("Decoded audio must contain a non-empty mono waveform.")
-
-    sample_rate = int(sample_rate)
-    if sample_rate == TARGET_SAMPLE_RATE:
-        return samples, sample_rate, sample_rate, False
-    if sample_rate <= 0:
-        raise ValueError(f"Invalid sampling rate: {sample_rate}")
-
-    divisor = math.gcd(sample_rate, TARGET_SAMPLE_RATE)
-    samples = resample_poly(
-        samples,
-        TARGET_SAMPLE_RATE // divisor,
-        sample_rate // divisor,
-    ).astype("float32")
-    return samples, TARGET_SAMPLE_RATE, sample_rate, True
-
-
-def resolve_device(requested: str) -> Any:
-    try:
-        import torch
-    except ImportError as exc:
-        raise RuntimeError("PyTorch is required; use the Colab runtime's PyTorch.") from exc
-
-    if requested == "auto":
-        requested = "cuda" if torch.cuda.is_available() else "cpu"
-    if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested, but no GPU is available in this runtime.")
-    return torch.device(requested)
-
-
-def load_asr_model(model_id: str, device: Any) -> tuple[Any, Any]:
-    try:
-        import torch
-        from transformers import (
-            AutoFeatureExtractor,
-            AutoModelForCTC,
-            AutoTokenizer,
-            Wav2Vec2Processor,
-        )
-    except ImportError as exc:
-        raise RuntimeError(
-            "Install transformers and use a runtime with PyTorch before loading the model."
-        ) from exc
-
-    # The checkpoint also publishes an optional KenLM/pyctcdecode processor.
-    # Use ordinary greedy CTC decoding for the baseline so the experiment does
-    # not depend on compiling KenLM in the Colab runtime.
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    processor = Wav2Vec2Processor(
-        feature_extractor=feature_extractor,
-        tokenizer=tokenizer,
-    )
-    model = AutoModelForCTC.from_pretrained(model_id)
-    model.to(device)
-    model.eval()
-    return processor, model
-
-
-def transcribe(
-    samples: Any,
-    processor: Any,
-    model: Any,
-    device: Any,
-) -> tuple[str, float]:
-    import torch
-
-    inputs = processor(
-        samples,
-        sampling_rate=TARGET_SAMPLE_RATE,
-        return_tensors="pt",
-        padding=True,
-    )
-    inputs = {
-        name: value.to(device) if hasattr(value, "to") else value
-        for name, value in inputs.items()
-    }
-
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    started = time.perf_counter()
-    with torch.inference_mode():
-        logits = model(**inputs).logits
-        predicted_ids = torch.argmax(logits, dim=-1)
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    latency = time.perf_counter() - started
-    prediction = processor.batch_decode(predicted_ids, group_tokens=True)[0]
-    return prediction, latency
-
-
-def calculate_metrics(predictions: list[dict[str, Any]]) -> dict[str, Any]:
-    try:
-        from jiwer import cer, wer
-    except ImportError as exc:
-        raise RuntimeError("Install jiwer before calculating CER and WER.") from exc
-
-    references = [row["reference"] for row in predictions]
-    hypotheses = [row["prediction"] for row in predictions]
-    if not predictions:
-        return {
-            "cer": None,
-            "wer": None,
-            "sentence_accuracy": None,
-            "mean_latency_seconds": None,
-            "median_latency_seconds": None,
-            "p95_latency_seconds": None,
-            "mean_real_time_factor": None,
-        }
-
-    latencies = [row["latency_seconds"] for row in predictions]
-    real_time_factors = [
-        row["real_time_factor"]
-        for row in predictions
-        if row["real_time_factor"] is not None
-    ]
-    p95_index = max(0, math.ceil(len(latencies) * 0.95) - 1)
-    sorted_latencies = sorted(latencies)
-    return {
-        "cer": float(cer(references, hypotheses)),
-        "wer": float(wer(references, hypotheses)),
-        "sentence_accuracy": sum(
-            row["reference"] == row["prediction"] for row in predictions
-        )
-        / len(predictions),
-        "mean_latency_seconds": statistics.mean(latencies),
-        "median_latency_seconds": statistics.median(latencies),
-        "p95_latency_seconds": sorted_latencies[p95_index],
-        "mean_real_time_factor": (
-            statistics.mean(real_time_factors) if real_time_factors else None
-        ),
-    }
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     configuration, manifest_rows = load_configuration(args)
-    selected_audio = stream_selected_audio(configuration, manifest_rows)
+    cache_dir = None
+    if not args.no_audio_cache:
+        cache_dir = (
+            resolve_path(args.audio_cache_dir)
+            if args.audio_cache_dir
+            else resolve_path(args.manifest_dir) / "audio_cache"
+        )
+
+    def report_progress(message: str) -> None:
+        print(message, flush=True)
+
+    selected_audio = stream_selected_audio(
+        configuration,
+        manifest_rows,
+        cache_dir=cache_dir,
+        progress_callback=report_progress,
+    )
     device = resolve_device(args.device)
+    print(f"Loading ASR model on {device}: {args.model}", flush=True)
     processor, model = load_asr_model(args.model, device)
+    print(f"Running inference on {len(selected_audio)} samples...", flush=True)
 
     predictions: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     resampled_count = 0
 
-    for row in selected_audio:
+    for sample_number, row in enumerate(selected_audio, start=1):
         try:
-            samples, sample_rate, original_sample_rate, was_resampled = decode_and_resample(
+            samples, _, original_sample_rate, was_resampled = decode_and_resample(
                 row["audio_bytes"]
             )
             resampled_count += int(was_resampled)
-            prediction, latency = transcribe(samples, processor, model, device)
+            (
+                prediction,
+                latency,
+                model_latency,
+                decoder_latency,
+                filtered_unk_count,
+            ) = transcribe(
+                samples,
+                processor,
+                model,
+                device,
+                decoder=args.decoder,
+                beam_width=args.beam_width,
+            )
             reference = normalize_asr_text(row.get("normalized_transcript") or row.get("transcript"))
             normalized_prediction = normalize_asr_text(prediction)
             duration = float(row["duration"]) if row.get("duration") else None
@@ -354,10 +182,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "reference": reference,
                     "prediction": normalized_prediction,
                     "latency_seconds": latency,
+                    "model_latency_seconds": model_latency,
+                    "decoder_latency_seconds": decoder_latency,
+                    "filtered_unk_count": filtered_unk_count,
                     "audio_duration_seconds": duration,
                     "real_time_factor": latency / duration if duration and duration > 0 else None,
                 }
             )
+            print(f"Inference progress: {sample_number}/{len(selected_audio)}", flush=True)
         except Exception as exc:
             errors.append(
                 {
@@ -365,28 +197,40 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "error": str(exc),
                 }
             )
+            print(
+                f"Inference progress: {sample_number}/{len(selected_audio)} "
+                f"(error: {exc})",
+                flush=True,
+            )
 
     report = {
         "model": args.model,
-        "decoder": "greedy_ctc",
+        "decoder": args.decoder,
+        "beam_width": args.beam_width if args.decoder == "beam_ctc" else None,
         "device": str(device),
         "split": args.split,
         "dataset": configuration["dataset"],
         "source_split": configuration["source_split"],
         "manifest_dir": configuration["manifest_dir"],
+        "audio_cache_dir": str(cache_dir) if cache_dir is not None else None,
         "normalization_version": ASR_NORMALIZATION_VERSION,
+        "metric_schema_version": METRIC_SCHEMA_VERSION,
+        "metric_definitions": metric_definitions(),
         "target_sample_rate": TARGET_SAMPLE_RATE,
         "requested_samples": len(manifest_rows),
         "successful_samples": len(predictions),
         "error_count": len(errors),
         "resampled_count": resampled_count,
         "metrics": calculate_metrics(predictions),
+        "diagnostics": calculate_prediction_diagnostics(predictions),
+        "word_segmentation_examples": word_segmentation_examples(predictions),
         "predictions": predictions,
         "errors": errors,
         "note": (
-            "This report evaluates the existing checkpoint before project-specific "
-            "fine-tuning with greedy CTC decoding. The first inference may include "
-            "GPU warm-up overhead."
+            f"Evaluation uses {args.decoder} decoding. The first inference may include "
+            "GPU warm-up overhead. beam_ctc is a no-language-model experiment. "
+            "Visible special tokens are removed before scoring; suppressed [UNK] "
+            "emissions are counted in diagnostics."
         ),
     }
     return report
@@ -411,7 +255,36 @@ def main() -> int:
     print(f"Successful samples: {report['successful_samples']}")
     print(f"Errors: {report['error_count']}")
     print(f"Resampled to 16 kHz: {report['resampled_count']}")
-    print(f"Metrics: {report['metrics']}")
+    metrics = report["metrics"]
+    print("Accuracy rates (decimal; percentage in parentheses):")
+    for label, key in (
+        ("Code-point CER", "cer"),
+        ("Grapheme-cluster CER", "grapheme_cluster_cer"),
+        ("Khmer-segmented WER", "wer"),
+        ("Legacy whitespace WER", "whitespace_wer"),
+    ):
+        value = metrics.get(key)
+        formatted = (
+            "n/a"
+            if value is None
+            else f"{value:.4f} ({value * 100:.2f}%)"
+        )
+        print(f"  {label}: {formatted}")
+    latency_values = (
+        metrics.get("mean_latency_seconds"),
+        metrics.get("median_latency_seconds"),
+        metrics.get("p95_latency_seconds"),
+    )
+    if all(value is not None for value in latency_values):
+        print(
+            "Latency: "
+            f"mean {latency_values[0]:.3f}s, "
+            f"median {latency_values[1]:.3f}s, "
+            f"p95 {latency_values[2]:.3f}s"
+        )
+    else:
+        print("Latency: unavailable")
+    print(f"Diagnostics: {report['diagnostics']}")
     print(f"Saved report to: {output_path}")
     return 0 if report["successful_samples"] else 1
 
