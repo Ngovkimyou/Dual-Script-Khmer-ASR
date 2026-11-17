@@ -51,6 +51,7 @@ DEFAULT_OUTPUT = ROOT_DIR / "reports" / "asr" / "baseline_smoke_test.json"
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse inference, manifest, and report options."""
     parser = argparse.ArgumentParser(
         description="Run baseline inference on selected Khmer ASR manifest rows."
     )
@@ -106,6 +107,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Load selected manifest rows and replay settings."""
     manifest_dir = resolve_path(args.manifest_dir)
     rows = read_manifest_rows(manifest_dir, args.split)
     if args.max_samples:
@@ -122,6 +124,7 @@ def load_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], list[d
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    """Run ASR inference and return predictions with evaluation metrics."""
     configuration, manifest_rows = load_configuration(args)
     cache_dir = None
     if not args.no_audio_cache:
@@ -237,6 +240,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Run ASR inference and save the prediction report."""
     args = parse_args()
     try:
         report = run(args)

@@ -166,8 +166,8 @@ Completed ASR work:
 
 - Dataset inspection, deterministic manifest building, and manifest validation
   scripts are in `scripts/inspect_asr_dataset.py`, `scripts/build_asr_manifest.py`,
-  and `scripts/validate_asr_manifest.py`. `scripts/package_kaggle_asr.py`
-  creates the one-file source bundle for the Kaggle training notebook.
+  and `scripts/validate_asr_manifest.py`. The manifest builder supports extending
+  an existing split while retaining its rows and held-out test set.
 - Shared ASR logic is in `khmer_transliteration/asr_data.py`,
   `asr_audio.py`, `asr_decoding.py`, `asr_inference.py`,
   `asr_metrics.py`, and `asr_text.py`.
@@ -191,12 +191,12 @@ Completed ASR work:
   43.67% manually segmented WER and 50.78% automatic WER on the same selected
   rows; this sample is not an overall test-set estimate. No further manual
   audit is planned for the next run.
-- The attempted 5,000-row Colab run did not finish or retain its checkpoint.
-- `notebooks/finetune_asr_kaggle.ipynb` prepares the 5,000-row Kaggle run. Its
-  manifest keeps the original 126-row test set unchanged and excludes its
-  speakers and transcript groups from new train/validation rows. The 5,000-row
-  target includes the test rows. See `kaggle/README.md` for preparing the
-  one-file source bundle, running the notebook, and retaining checkpoints.
+- The next run is a 2,000-row Colab experiment.
+- `notebooks/finetune_asr_2000.ipynb` extends the existing 1,000-row manifest by
+  1,000 unique rows, preserves the old split assignments and 126-row test set,
+  then materializes, smoke-checks, trains, and evaluates. It starts from the
+  pretrained checkpoint. Colab's Hugging Face account must have access to the
+  gated source dataset.
 - The FastAPI app exposes `/api/asr/status` and `POST /api/asr`.
 - The browser UI supports microphone recording or WAV upload and displays both
   Khmer script and dictionary-backed canonical Romanized Khmer.

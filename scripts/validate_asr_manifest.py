@@ -55,6 +55,7 @@ def read_wav_metadata(audio_bytes: bytes | None) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse manifest replay and validation options."""
     parser = argparse.ArgumentParser(
         description="Validate manifest rows by replaying the deterministic shuffled stream."
     )
@@ -73,6 +74,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate(args: argparse.Namespace) -> dict[str, Any]:
+    """Replay the source dataset and check the selected manifest rows."""
     try:
         from datasets import Audio, load_dataset
     except ImportError as exc:
@@ -186,6 +188,7 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Validate the manifests and write the validation report."""
     args = parse_args()
     try:
         report = validate(args)

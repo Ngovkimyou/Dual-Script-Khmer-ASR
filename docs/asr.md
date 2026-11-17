@@ -1,7 +1,22 @@
-# Khmer ASR extension
+# ASR Implementation and Workflow Guide
 
-This document describes the speech-recognition extension built on top of the
-Khmer Transliteration Keyboard. The current experiment uses a pretrained
+For a short summary of the project, data, results, and status, see
+[README-ASR.md](../README-ASR.md). This guide is for setup, reproduction, and
+implementation details.
+
+## Contents
+
+- [Current experiment](#current-experiment)
+- [Repository structure](#repository-structure)
+- [Environment setup](#environment-setup)
+- [Dataset workflow](#dataset-workflow)
+- [Baseline and fine-tuning](#baseline-and-fine-tuning)
+- [Evaluation](#evaluation)
+- [Dual-script output](#dual-script-output)
+- [Web API and UI](#web-api-and-ui)
+- [Verification checklist](#verification-checklist)
+
+The current experiment uses a pretrained
 XLS-R/Wav2Vec2 CTC checkpoint and fine-tunes it for Khmer speech. It does not
 train a model from scratch.
 
@@ -11,6 +26,7 @@ train a model from scratch.
 - Model: `vitouphy/wav2vec2-xls-r-300m-khmer`
 - Audio target: mono, 16 kHz WAV
 - Pilot: 1,000 selected rows, split into 793 training, 81 validation, and 126 test rows
+- Next run: 2,000 total rows, retaining the pilot rows and adding 1,000 new rows
 - Split policy: complete speaker groups are kept in one split to reduce speaker leakage
 - Test policy: the test split is not passed to `Trainer`; it is used only for final evaluation
 
@@ -36,14 +52,11 @@ scripts/
   run_asr_baseline.py
   score_asr_report.py   # re-score saved predictions without loading audio/model
   finetune_asr.py
-  package_kaggle_asr.py # create the Kaggle source upload bundle
 notebooks/
   prepare_dataset.ipynb
   asr_baseline.ipynb
   finetune_asr.ipynb
-  finetune_asr_kaggle.ipynb
-kaggle/
-  README.md               # 5,000-row Kaggle setup and checkpoint guidance
+  finetune_asr_2000.ipynb
 ```
 
 The scripts reuse the package modules. They should not import helper functions
@@ -83,25 +96,26 @@ character:
 python scripts/build_asr_manifest.py --target-rows 1000 --scan-rows 5000 --shuffle-buffer 5000 --output-dir data/voice_1000
 ```
 
-The existing 1,000-row manifest records a shuffle buffer of 5,000. When
-expanding the experiment, preserve the existing test set with the fixed-test
-mode:
+The pilot command's `--scan-rows` and `--shuffle-buffer` values control source
+selection; `--target-rows 1000` is the number of rows actually selected. Extend
+the existing split to 2,000 total rows with:
 
 ```powershell
-python scripts/build_asr_manifest.py --target-rows 5000 --scan-rows 25000 --fixed-test-manifest-dir data/voice_1000 --output-dir data/voice_5000_fixed_test
+python scripts/build_asr_manifest.py --target-rows 2000 --scan-rows 10000 --extend-manifest-dir data/voice_1000 --output-dir data/voice_2000
 ```
 
-This copies the original 126 test rows unchanged, excludes their speakers and
-transcript groups from train/validation, and selects the remaining rows from the
-same deterministic Hugging Face stream. The command infers dataset, seed,
-revision, and shuffle-buffer values from the existing manifest summary. Prepare
-the one-file Kaggle source bundle with:
+Extension retains all 1,000 existing rows and their split assignments, keeps
+the same 126-row held-out test set, and adds 1,000 unique rows without using
+test speakers or duplicate transcript groups. It scans 10,000 source rows to
+find those additions; the final selected dataset is 2,000 rows. The command infers
+the dataset, seed, revision, and shuffle-buffer values from the base manifest. The source is
+gated on Hugging Face, so the account used in Colab must have access. The notebook prompts for a read token in a masked field because the VS Code
+Colab extension cannot retrieve secrets with `userdata.get()`. A token identifies
+the account; it does not override a pending access request.
 
-```powershell
-.\.venv\Scripts\python.exe scripts\package_kaggle_asr.py
-```
-
-Then follow `kaggle/README.md` and run `notebooks/finetune_asr_kaggle.ipynb`.
+Run `notebooks/finetune_asr_2000.ipynb` in Colab. It saves manifests,
+materialized WAVs, and checkpoints to Google Drive. The 2,000-row model starts
+from the same pretrained checkpoint as the pilot for a comparable evaluation.
 
 Validate the deterministic replay and WAV headers:
 
@@ -174,7 +188,9 @@ The application automatically prefers `models/khmer_xlsr_ddd_1000_clean/` and
 falls back to the earlier `models/khmer_xlsr_ddd_1000/` if the corrected model
 has not been copied locally. Set `KHMER_ASR_MODEL_PATH` to use another local
 checkpoint, or remove both local folders to fall back to the pretrained
-Hugging Face model.
+Hugging Face model. For a hosted demo, deploy the fine-tuned checkpoint folder
+or set `KHMER_ASR_MODEL_PATH` to its mounted location; model folders are not
+included in a Git checkout.
 
 ## Evaluation
 
@@ -224,10 +240,9 @@ not fully validated for this speech-text domain. Treat these scores as pilot
 estimates, not final performance claims. Re-run evaluation after model or
 decoding changes and keep the test split untouched during training.
 
-The next experiment fine-tunes on 5,000 selected rows in Kaggle, using the same
-126 held-out test examples as the 1,000-row pilot. The 5,000-row target includes
-the fixed test rows, and their speakers and transcript groups are excluded from
-training and validation. See `kaggle/README.md` for setup and resume guidance.
+The next experiment fine-tunes on 2,000 total rows in Colab, retaining all
+pilot rows and the same untouched 126-row test set. Its results will be compared
+with the pretrained baseline and the existing 1,000-row model.
 
 WER can exceed 100% when insertions add more errors than there are reference
 words. The pretrained model card's published WER/CER uses a self-split OpenSLR
@@ -273,9 +288,59 @@ records microphone input, converts it to mono 16 kHz WAV, and displays both
 outputs. WAV upload is supported; arbitrary WebM/MP3 conversion is
 intentionally outside the current server dependencies.
 
+Stopping a microphone recording sends it automatically; **Upload WAV** is for
+selecting an audio file that already exists on the device. Recordings stop
+automatically after 60 seconds, and uploaded files are limited to 4 MB. A
+60-second microphone recording is converted to mono 16 kHz WAV and remains
+below that limit. Larger existing WAV files need to be shortened or converted
+to mono 16 kHz before upload. Browsers require HTTPS for microphone access on
+a hosted site; `localhost` is allowed for local development.
+
+## Vercel deployment and local inference
+
+The repository can be cloned and run locally using the environment steps above,
+but the fine-tuned model is a separate artifact. Git ignores model folders
+because the checkpoint is about 1.26 GB. The clone does not include the model,
+so reproducing fine-tuned inference requires obtaining the complete
+`khmer_xlsr_ddd_1000_clean` folder from the [shared Google Drive ASR folder](https://drive.google.com/drive/folders/1cCC9Bo5iZ3t-rJs6-qrUiopC4rci4t9a?usp=sharing)
+(under `models/khmer_xlsr_ddd_1000_clean`). Access to the shared Drive folder is
+required. Place the downloaded folder at `models/khmer_xlsr_ddd_1000_clean/`,
+where the application detects it automatically. Configure
+`KHMER_ASR_MODEL_PATH` only if the checkpoint is stored elsewhere. If the
+fine-tuned checkpoint is unavailable, inference falls back to the pretrained
+Hugging Face model.
+
+Vercel supports FastAPI, but this repository is not currently packaged for a
+Vercel ASR deployment. Vercel installs Python dependencies from its recognized
+root dependency files; the ASR packages are currently listed separately in
+`requirements-asr.txt`, while `requirements.txt` does not include PyTorch or
+Transformers. The fine-tuned model is also not part of the Git deployment.
+
+Vercel Function requests are limited to 4.5 MB, so the app's upload cap is 4 MB.
+Python Functions have a 500 MB standard bundle limit; Vercel's Large Functions
+beta raises the package limit to 5 GB, but Hobby Functions still have 2 GB of
+memory. Function filesystems are read-only except for up to 500 MB of temporary
+storage. These limits make downloading the 1.26 GB checkpoint into `/tmp`
+unsuitable. See Vercel's [Python runtime](https://vercel.com/docs/functions/runtimes/python),
+[function limits](https://vercel.com/docs/functions/limitations), and
+[FastAPI deployment guide](https://vercel.com/kb/guide/ship-a-fastapi-app-on-vercel).
+
+The keyboard's `/api/select` and `/api/collect` routes write local CSV files.
+Vercel's function filesystem is not persistent, so those writes are not a
+reliable place to keep shared user data; use hosted storage if that feature must
+persist after deployment.
+
+For reproducible ASR inference in this school project, the documented local
+setup is the supported workflow: install the project dependencies and a
+compatible PyTorch build, obtain the model artifact separately, and run the app
+locally. Serving ASR through the Vercel URL requires additional deployment
+configuration, either by packaging the model and dependencies with the Vercel
+function or by connecting the website to a separate inference backend.
+
 ## Verification checklist
 
-Run the dependency-light tests after refactoring:
+Run the ASR tests after installing `requirements-asr.txt` and a compatible
+PyTorch build:
 
 ```powershell
 python -m unittest discover -s tests -v

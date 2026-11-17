@@ -27,6 +27,7 @@ VISIBLE_SPECIAL_TOKENS = ("[UNK]", "[PAD]", "<s>", "</s>")
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the saved prediction report and output path."""
     parser = argparse.ArgumentParser(
         description=(
             "Re-score saved ASR predictions with Khmer-aware WER without "
@@ -113,6 +114,7 @@ def rescore_report(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Re-score saved predictions and write the updated report."""
     args = parse_args()
     report_path = args.report if args.report.is_absolute() else ROOT_DIR / args.report
     output_path = args.output

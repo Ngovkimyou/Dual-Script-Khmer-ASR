@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from khmer_transliteration.asr_audio import (
+    MAX_AUDIO_DURATION_SECONDS,
     TARGET_SAMPLE_RATE,
     decode_and_resample,
 )
@@ -37,6 +39,7 @@ def resolve_model_source(source: str | Path | None = None) -> str:
 
 
 def resolve_device(requested: str = "auto") -> Any:
+    """Select the requested PyTorch device or detect one automatically."""
     try:
         import torch
     except ImportError as exc:
@@ -481,6 +484,8 @@ class ASRService:
         self._device: Any = None
         self._processor: Any = None
         self._model: Any = None
+        self._load_lock = threading.Lock()
+        self._inference_lock = threading.Lock()
 
     @property
     def loaded(self) -> bool:
@@ -497,8 +502,14 @@ class ASRService:
     def _ensure_loaded(self) -> None:
         if self.loaded:
             return
-        self._device = resolve_device(self.requested_device)
-        self._processor, self._model = load_asr_model(self.model_source, self._device)
+        with self._load_lock:
+            if self.loaded:
+                return
+            device = resolve_device(self.requested_device)
+            processor, model = load_asr_model(self.model_source, device)
+            self._device = device
+            self._processor = processor
+            self._model = model
 
     def warmup(self) -> dict[str, Any]:
         """Load the model before the first user transcription request."""
@@ -509,20 +520,27 @@ class ASRService:
         """Transcribe WAV bytes and return both scripts plus timing metadata."""
         from khmer_transliteration.romanization import romanize_khmer_text
 
-        samples, _, original_rate, was_resampled = decode_and_resample(audio_bytes)
-        self._ensure_loaded()
-        (
-            prediction,
-            latency,
-            model_latency,
-            decoder_latency,
-            filtered_unk_count,
-        ) = transcribe(
-            samples,
-            self._processor,
-            self._model,
-            self._device,
+        samples, _, original_rate, was_resampled = decode_and_resample(
+            audio_bytes,
+            require_wav_container=True,
+            max_duration_seconds=MAX_AUDIO_DURATION_SECONDS,
         )
+        self._ensure_loaded()
+        # One inference at a time keeps GPU memory use predictable for the
+        # single-user school demo and avoids concurrent use of the same model.
+        with self._inference_lock:
+            (
+                prediction,
+                latency,
+                model_latency,
+                decoder_latency,
+                filtered_unk_count,
+            ) = transcribe(
+                samples,
+                self._processor,
+                self._model,
+                self._device,
+            )
         romanized = romanize_khmer_text(prediction)
         return {
             "khmer_text": prediction,

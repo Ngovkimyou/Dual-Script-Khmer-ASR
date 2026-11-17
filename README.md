@@ -8,10 +8,9 @@ The current Windows IME uses a local named-pipe engine instead of a web port.
 The pipe engine keeps the Python rules/dictionary/model loaded in memory and
 records local user selections for personalization.
 
-The project also contains a Khmer speech-recognition extension that fine-tunes
-an XLS-R/Wav2Vec2 model and exposes Khmer plus Romanized output in the browser
-UI. See [docs/asr.md](docs/asr.md) for the dataset workflow, cloud-training
-recovery, Khmer-aware evaluation, model storage, and API details.
+The project also contains a Khmer speech-recognition extension. Start with the
+[tutor-facing ASR overview](README-ASR.md); use the [ASR workflow guide](docs/asr.md)
+for setup commands, training recovery, evaluation, model storage, and API details.
 
 ## Fresh Clone Setup
 
@@ -120,6 +119,19 @@ windows_ime\engine\uninstall_login_startup.cmd
 - Port `8000` conflict: only the browser UI uses port `8000`; the Windows IME
   uses `\\.\pipe\KhmerRomanizedIme`.
 
+## Khmer ASR
+
+Install the separate ASR dependencies from the repository root:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-asr.txt
+```
+
+Read the [ASR project overview](README-ASR.md) for the goal, dataset, method,
+results, and status. The [ASR workflow guide](docs/asr.md) covers detailed
+commands and notebook setup.
+
 ## Project Structure
 
 - `khmer_transliteration/` - core Python package
@@ -142,7 +154,8 @@ windows_ime\engine\uninstall_login_startup.cmd
 - `windows_ime/` - Windows TSF IME prototype and local pipe engine
 - `app.py` - compatibility wrapper for `uvicorn app:app`
 - `docs/scoring_logic_snapshot.md` - current scoring/ranking reference
-- `docs/asr.md` - Khmer ASR preparation, fine-tuning, evaluation, and UI guide
+- `README-ASR.md` - concise ASR project overview for reviewers
+- `docs/asr.md` - detailed ASR setup, fine-tuning, evaluation, and UI guide
 
 ## Common Commands
 
