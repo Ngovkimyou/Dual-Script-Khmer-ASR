@@ -108,6 +108,7 @@ def materialize_dataset(manifest_dir: Path, output_dir: Path) -> None:
 
 
 def load_datasets(materialized_dir: Path, processor: Any) -> Any:
+    """Load the materialized train and validation JSONL files."""
     from datasets import load_dataset
 
     manifest_dir = materialized_dir / "manifests"
@@ -214,6 +215,7 @@ class DataCollatorCTCWithPadding:
 
 
 def make_compute_metrics(processor: Any) -> Any:
+    """Create the Trainer callback for decoded CTC metrics."""
     import numpy as np
 
     def compute_metrics(prediction_output: Any) -> dict[str, float]:
@@ -250,6 +252,7 @@ def build_training_arguments(
     stage: str,
     checkpoint_steps: int = 250,
 ) -> Any:
+    """Build stage-specific Trainer and checkpoint settings."""
     import torch
     from transformers import TrainingArguments
 
@@ -391,6 +394,7 @@ def train_model(
     checkpoint_steps: int = 250,
     resume: bool = False,
 ) -> None:
+    """Fine-tune, evaluate, and save the CTC model artifacts."""
     from transformers import AutoModelForCTC, Trainer
     from transformers.trainer_utils import get_last_checkpoint
 
@@ -525,6 +529,7 @@ def train_model(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the requested ASR preparation or training stage."""
     parser = argparse.ArgumentParser(description="Fine-tune Khmer XLS-R on ASR manifests.")
     parser.add_argument(
         "--stage",
@@ -556,6 +561,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Run the selected ASR preparation, validation, or training stage."""
     args = parse_args()
     manifest_dir = resolve_path(args.manifest_dir)
     materialized_dir = resolve_path(args.materialized_dir)

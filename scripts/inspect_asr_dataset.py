@@ -83,6 +83,7 @@ def audio_metadata(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line options for dataset inspection."""
     parser = argparse.ArgumentParser(
         description="Inspect a limited number of rows from a streamed ASR dataset."
     )
@@ -134,6 +135,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def inspect_dataset(args: argparse.Namespace) -> dict[str, Any]:
+    """Stream dataset rows and summarize their ASR metadata."""
     try:
         from datasets import Audio, load_dataset
     except ImportError as exc:
@@ -246,6 +248,7 @@ def inspect_dataset(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Run dataset inspection and write the summary report."""
     args = parse_args()
     try:
         report = inspect_dataset(args)

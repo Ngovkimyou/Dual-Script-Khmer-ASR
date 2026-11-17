@@ -1,9 +1,12 @@
 """FastAPI browser UI for keyboard suggestions and Khmer ASR."""
 
+import threading
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from khmer_transliteration.collection import append_examples
 from khmer_transliteration.asr_inference import ASRService
@@ -16,6 +19,8 @@ from khmer_transliteration.suggestion_engine import get_suggestions, load_rankin
 
 
 app = FastAPI(title="Khmer Transliteration Keyboard")
+MAX_ASR_UPLOAD_BYTES = 4 * 1024 * 1024
+ASR_REQUEST_SLOT = threading.BoundedSemaphore(1)
 
 # Load shared resources once at app startup so each request stays fast.
 dataset = load_dataset()
@@ -93,29 +98,65 @@ def warmup_asr():
 @app.post("/api/asr")
 async def transcribe_audio(request: Request):
     """Transcribe a WAV request body and return Khmer plus Romanized output."""
-    audio_bytes = await request.body()
-    if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Request body must contain WAV audio.")
-
-    content_type = request.headers.get("content-type", "").lower()
+    content_type = request.headers.get("content-type", "").lower().split(";", 1)[0].strip()
     accepted_types = (
         "audio/wav",
         "audio/x-wav",
         "audio/wave",
         "application/octet-stream",
     )
-    if content_type and not content_type.startswith(accepted_types):
+    if content_type and content_type not in accepted_types:
         raise HTTPException(
             status_code=415,
             detail="Only WAV audio is supported for ASR requests.",
         )
 
+    if not ASR_REQUEST_SLOT.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="The ASR demo is processing another recording. Please try again shortly.",
+        )
+
     try:
-        return asr_service.transcribe_wav(audio_bytes)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (RuntimeError, OSError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Content-Length header.",
+                ) from exc
+            if declared_size < 0:
+                raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+            if declared_size > MAX_ASR_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Audio file exceeds the 4 MB upload limit.",
+                )
+
+        audio_buffer = bytearray()
+        async for chunk in request.stream():
+            if len(audio_buffer) + len(chunk) > MAX_ASR_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Audio file exceeds the 4 MB upload limit.",
+                )
+            audio_buffer.extend(chunk)
+        if not audio_buffer:
+            raise HTTPException(
+                status_code=400,
+                detail="Request body must contain WAV audio.",
+            )
+
+        try:
+            return await run_in_threadpool(asr_service.transcribe_wav, bytes(audio_buffer))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        ASR_REQUEST_SLOT.release()
 
 
 @app.post("/api/select")

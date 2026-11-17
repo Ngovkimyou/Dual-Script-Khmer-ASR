@@ -1,7 +1,25 @@
+import unittest
+
 import torch
 
 from khmer_transliteration.asr_decoding import ctc_prefix_beam_search
 from khmer_transliteration.asr_inference import extend_ctc_vocabulary
+
+
+class CTCDecodingTests(unittest.TestCase):
+    """Expose the decoder checks to the repository's unittest command."""
+
+    def test_collapses_repeated_tokens_without_blank(self):
+        test_ctc_beam_search_collapses_repeated_tokens_without_blank()
+
+    def test_keeps_repeated_tokens_after_blank(self):
+        test_ctc_beam_search_keeps_repeated_tokens_after_blank()
+
+    def test_can_block_special_tokens(self):
+        test_ctc_beam_search_can_block_special_tokens()
+
+    def test_vocabulary_expansion_preserves_existing_ids(self):
+        test_vocabulary_expansion_preserves_existing_ids()
 
 
 def test_ctc_beam_search_collapses_repeated_tokens_without_blank():

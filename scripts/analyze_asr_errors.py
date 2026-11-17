@@ -113,6 +113,7 @@ def analyze_report(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the report and diagnostic selection options."""
     parser = argparse.ArgumentParser(
         description="Analyze Khmer grapheme-cluster and coeng errors in an ASR report."
     )
@@ -134,6 +135,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Analyze a saved ASR report and write the diagnostic output."""
     args = parse_args()
     report_path = args.report if args.report.is_absolute() else ROOT_DIR / args.report
     if args.minimum_coeng_count < 1:

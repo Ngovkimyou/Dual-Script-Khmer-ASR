@@ -261,12 +261,13 @@ def write_manifest(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse dataset selection, split, and output options."""
     parser = argparse.ArgumentParser(
         description="Build balanced speaker-disjoint ASR manifests from a streamed dataset."
     )
     parser.add_argument(
         "--dataset",
-        help="Hugging Face dataset ID. In fixed-test mode, defaults to the test manifest's dataset.",
+        help="Hugging Face dataset ID. Defaults to the selected base manifest's dataset when extending.",
     )
     parser.add_argument("--split", help="Dataset split to stream.")
     parser.add_argument("--target-rows", type=int, default=300)
@@ -291,10 +292,21 @@ def parse_args() -> argparse.Namespace:
             "and build a larger total dataset around that fixed test set."
         ),
     )
+    parser.add_argument(
+        "--extend-manifest-dir",
+        type=Path,
+        help=(
+            "Keep every existing train/validation/test row from this manifest, "
+            "then add new speaker-safe rows until --target-rows is reached."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
 
-    if args.fixed_test_manifest_dir is None:
+    if args.fixed_test_manifest_dir is not None and args.extend_manifest_dir is not None:
+        parser.error("Use only one of --fixed-test-manifest-dir or --extend-manifest-dir")
+
+    if args.fixed_test_manifest_dir is None and args.extend_manifest_dir is None:
         args.dataset = args.dataset or "Digital-Divide-Data/khmer-speech-dataset"
         args.split = args.split or "train"
         args.shuffle_buffer = (
@@ -315,9 +327,81 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_manifests(args: argparse.Namespace) -> dict[str, Any]:
+    """Build deterministic train, validation, and test manifests."""
     fixed_test_rows: list[dict[str, Any]] | None = None
     fixed_test_dir: Path | None = None
-    if args.fixed_test_manifest_dir is not None:
+    base_split_rows: dict[str, list[dict[str, Any]]] | None = None
+    extend_dir: Path | None = None
+    if args.extend_manifest_dir is not None:
+        extend_dir = resolve_path(args.extend_manifest_dir)
+        base_configuration = load_manifest_configuration(extend_dir)
+        expected = {
+            "dataset": base_configuration["dataset"],
+            "split": base_configuration["source_split"],
+            "seed": base_configuration["seed"],
+            "shuffle_buffer": base_configuration["shuffle_buffer"],
+        }
+        for argument_name, expected_value in expected.items():
+            argument_value = getattr(args, argument_name)
+            if argument_value is not None and argument_value != expected_value:
+                raise ValueError(
+                    f"--{argument_name.replace('_', '-')}={argument_value!r} does not "
+                    f"match the base manifest value {expected_value!r}."
+                )
+            setattr(args, argument_name, expected_value)
+
+        manifest_revision = base_configuration.get("revision")
+        if args.revision is not None and args.revision != manifest_revision:
+            raise ValueError(
+                f"--revision={args.revision!r} does not match the base manifest "
+                f"revision {manifest_revision!r}."
+            )
+        if args.revision is None and manifest_revision not in (None, "default"):
+            args.revision = manifest_revision
+        elif args.revision == "default":
+            args.revision = None
+
+        base_split_rows = {
+            split_name: read_manifest_rows(extend_dir, split_name)
+            for split_name in ("train", "validation", "test")
+        }
+        base_total = sum(len(rows) for rows in base_split_rows.values())
+        if args.target_rows <= base_total:
+            raise ValueError(
+                f"--target-rows ({args.target_rows}) must exceed the existing "
+                f"manifest size ({base_total}) when extending."
+            )
+        output_path = (
+            args.output_dir
+            if args.output_dir.is_absolute()
+            else ROOT_DIR / args.output_dir
+        ).resolve()
+        if output_path == extend_dir.resolve():
+            raise ValueError("--output-dir must differ from --extend-manifest-dir.")
+
+        base_indices = [
+            int(row["source_row_index"])
+            for rows in base_split_rows.values()
+            for row in rows
+        ]
+        if len(base_indices) != len(set(base_indices)):
+            raise ValueError("The base manifests contain duplicate source row indexes.")
+        for left, right in (
+            ("train", "validation"),
+            ("train", "test"),
+            ("validation", "test"),
+        ):
+            if {row["speaker_id"] for row in base_split_rows[left]} & {
+                row["speaker_id"] for row in base_split_rows[right]
+            }:
+                raise ValueError("The base manifests contain speaker overlap between splits.")
+            if {row["group_key"] for row in base_split_rows[left]} & {
+                row["group_key"] for row in base_split_rows[right]
+            }:
+                raise ValueError("The base manifests contain transcript-group overlap.")
+        fixed_test_rows = base_split_rows["test"]
+        fixed_test_dir = extend_dir
+    elif args.fixed_test_manifest_dir is not None:
         fixed_test_dir = resolve_path(args.fixed_test_manifest_dir)
         fixed_configuration = load_manifest_configuration(fixed_test_dir)
         expected = {
@@ -386,17 +470,100 @@ def build_manifests(args: argparse.Namespace) -> dict[str, Any]:
     dataset = dataset.cast_column("audio", Audio(decode=False))
     shuffled = dataset.shuffle(seed=args.seed, buffer_size=args.shuffle_buffer)
     candidates, scanned_rows = collect_candidates(shuffled, args)
-    required_candidates = args.target_rows - (
-        len(fixed_test_rows) if fixed_test_rows is not None else 0
-    )
+    if base_split_rows is not None:
+        required_candidates = args.target_rows - sum(
+            len(rows) for rows in base_split_rows.values()
+        )
+    else:
+        required_candidates = args.target_rows - (
+            len(fixed_test_rows) if fixed_test_rows is not None else 0
+        )
     if len(candidates) < required_candidates:
         raise RuntimeError(
             f"Only {len(candidates)} unique candidate groups were found after scanning "
-            f"{scanned_rows} rows; {required_candidates} are needed before fixed-test "
+            f"{scanned_rows} rows; {required_candidates} are needed before existing-row "
             "exclusions, so increase --scan-rows."
         )
 
-    if fixed_test_rows is None:
+    added_rows = 0
+    if base_split_rows is not None:
+        base_rows = [row for rows in base_split_rows.values() for row in rows]
+        base_indices = {int(row["source_row_index"]) for row in base_rows}
+        base_groups = {
+            str(row.get("group_key") or normalize_asr_text(row.get("transcript") or ""))
+            for row in base_rows
+        }
+        test_speakers = {str(row["speaker_id"]).strip() for row in fixed_test_rows or []}
+        eligible_candidates = [
+            row
+            for row in candidates
+            if int(row["source_row_index"]) not in base_indices
+            and row["group_key"] not in base_groups
+            and row["speaker_id"] not in test_speakers
+        ]
+        added_rows = args.target_rows - len(base_rows)
+        if len(eligible_candidates) < added_rows:
+            raise RuntimeError(
+                f"Only {len(eligible_candidates)} new rows remain after excluding the "
+                f"existing data and held-out speakers; {added_rows} are required. "
+                "Increase --scan-rows."
+            )
+        selected = choose_balanced_candidates(
+            eligible_candidates,
+            added_rows,
+            args.seed,
+        )
+
+        known_speaker_splits = {
+            str(row["speaker_id"]): split_name
+            for split_name in ("train", "validation")
+            for row in base_split_rows[split_name]
+        }
+        additions: dict[str, list[dict[str, Any]]] = {
+            "train": [],
+            "validation": [],
+        }
+        new_speakers: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in selected:
+            existing_split = known_speaker_splits.get(row["speaker_id"])
+            if existing_split is None:
+                new_speakers[row["speaker_id"]].append(row)
+            else:
+                additions[existing_split].append(row)
+
+        validation_ratio = len(base_split_rows["validation"]) / max(
+            1,
+            len(base_split_rows["train"]) + len(base_split_rows["validation"]),
+        )
+        rng = random.Random(args.seed)
+        new_speaker_groups = list(new_speakers.items())
+        rng.shuffle(new_speaker_groups)
+        for _, speaker_rows in new_speaker_groups:
+            train_count = len(base_split_rows["train"]) + len(additions["train"])
+            validation_count = len(base_split_rows["validation"]) + len(
+                additions["validation"]
+            )
+            count_after_add = train_count + validation_count + len(speaker_rows)
+            validation_target = count_after_add * validation_ratio
+            train_target = count_after_add - validation_target
+            train_error = abs(train_count + len(speaker_rows) - train_target) + abs(
+                validation_count - validation_target
+            )
+            validation_error = abs(train_count - train_target) + abs(
+                validation_count + len(speaker_rows) - validation_target
+            )
+            destination = "train" if train_error <= validation_error else "validation"
+            additions[destination].extend(speaker_rows)
+
+        split_rows = {
+            "train": base_split_rows["train"] + additions["train"],
+            "validation": base_split_rows["validation"] + additions["validation"],
+            "test": base_split_rows["test"],
+        }
+        for split_name in ("train", "validation"):
+            split_rows[split_name].sort(key=lambda row: row["audio_path"])
+        fixed_test_source = str(extend_dir)
+    elif fixed_test_rows is None:
         selected = choose_balanced_candidates(candidates, args.target_rows, args.seed)
         split_rows = speaker_partition(
             selected,
@@ -472,6 +639,8 @@ def build_manifests(args: argparse.Namespace) -> dict[str, Any]:
         "scanned_rows": scanned_rows,
         "candidate_groups": len(candidates),
         "selected_rows": sum(len(rows) for rows in split_rows.values()),
+        "added_rows": added_rows if base_split_rows is not None else None,
+        "extended_manifest_dir": str(extend_dir) if extend_dir is not None else None,
         "fixed_test_manifest_dir": fixed_test_source,
         "split_counts": {name: len(rows) for name, rows in split_rows.items()},
         "speaker_counts": {
@@ -501,11 +670,18 @@ def build_manifests(args: argparse.Namespace) -> dict[str, Any]:
             ),
         },
         "note": (
-            "The test split is copied unchanged from the fixed test manifest; its speakers "
-            "and transcript groups are excluded from train/validation. Other rows are "
-            "selected once per group and assigned by complete speaker groups."
-            if fixed_test_rows is not None
-            else "Rows are selected with one record per group and assigned by complete speaker groups."
+            "All base train, validation, and test rows are retained. The test rows and their "
+            "speakers remain excluded from new training/validation rows; existing train and "
+            "validation speaker assignments are preserved. New speakers are assigned wholly "
+            "to one training split."
+            if base_split_rows is not None
+            else (
+                "The test split is copied unchanged from the fixed test manifest; its speakers "
+                "and transcript groups are excluded from train/validation. Other rows are "
+                "selected once per group and assigned by complete speaker groups."
+                if fixed_test_rows is not None
+                else "Rows are selected with one record per group and assigned by complete speaker groups."
+            )
         ),
     }
     with (output_dir / "manifest_summary.json").open("w", encoding="utf-8") as summary_file:
@@ -515,6 +691,7 @@ def build_manifests(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Build the requested manifests and print their split summary."""
     args = parse_args()
     try:
         summary = build_manifests(args)

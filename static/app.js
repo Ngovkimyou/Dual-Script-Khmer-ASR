@@ -25,8 +25,11 @@ let recordingSource = null;
 let recordingProcessor = null;
 let recordingSilenceGain = null;
 let recordingChunks = [];
+let recordingLimitTimer = null;
 let isRecording = false;
 let isAsrBusy = false;
+const MAX_ASR_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_RECORDING_SECONDS = 60;
 
 // Direct keyboard conversions for non-romanized keys in the browser UI.
 const KHMER_DIGITS_BY_CODE = {
@@ -449,6 +452,10 @@ async function startRecording() {
         isRecording = true;
         setAsrStatus("Recording...");
         setAsrControls();
+        recordingLimitTimer = window.setTimeout(() => {
+            setAsrStatus("60-second limit reached; sending recording...");
+            void stopRecording();
+        }, MAX_RECORDING_SECONDS * 1000);
     } catch (error) {
         if (recordingStream) {
             recordingStream.getTracks().forEach((track) => track.stop());
@@ -463,6 +470,10 @@ async function stopRecording() {
     }
 
     isRecording = false;
+    if (recordingLimitTimer !== null) {
+        window.clearTimeout(recordingLimitTimer);
+        recordingLimitTimer = null;
+    }
     const chunks = recordingChunks;
     const sourceRate = recordingAudioContext?.sampleRate || 44100;
     recordingProcessor?.disconnect();
@@ -492,6 +503,11 @@ function handleAudioFile(event) {
     }
     if (!file.name.toLowerCase().endsWith(".wav")) {
         setAsrStatus("Please select a WAV file.", true);
+        event.target.value = "";
+        return;
+    }
+    if (file.size > MAX_ASR_FILE_BYTES) {
+        setAsrStatus("Audio file exceeds the 4 MB upload limit.", true);
         event.target.value = "";
         return;
     }
