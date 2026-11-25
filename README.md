@@ -9,19 +9,19 @@ The pipe engine keeps the Python rules/dictionary/model loaded in memory and
 records local user selections for personalization.
 
 The project also contains a Khmer speech-recognition extension. Start with the
-[tutor-facing ASR overview](README-ASR.md); use the [ASR workflow guide](docs/asr.md)
+[ASR overview](README-ASR.md); use the [ASR workflow guide](docs/asr.md)
 for setup commands, training recovery, evaluation, model storage, and API details.
 
 ## Fresh Clone Setup
 
 After cloning the repo in VS Code, do these steps first.
 
-### 1. Install Requirements
+### 1. Install Requirements (If you already have it installed you can skip)
 
 - Windows 10/11
 - Python 3.10+
 - Git
-- For the real Windows IME prototype only: Visual Studio C++ Build Tools with
+- (Optional) For the real Windows IME prototype only: Visual Studio C++ Build Tools with
   the Windows SDK
 
 ### 2. Create Python Environment
@@ -285,3 +285,5 @@ Dataset-wide generation is still available, but it must be requested explicitly:
 ```powershell
 python scripts/auto_label_training_examples.py --from-dataset --max-inputs 100 --dry-run
 ```
+
+`Generative AI use: ChatGPT/Codex assisted with explaining ASR concepts and metrics, troubleshooting notebook and dataset-access issues, and drafting or revising code and project documentation. The project team reviewed the work and is responsible for the final implementation and interpretation. The audio and transcripts came from the cited dataset; model predictions were produced by the ASR system.`

@@ -1,9 +1,10 @@
-"""Dictionary-backed canonical Khmer-to-Romanized output.
+"""Best-effort dictionary-backed Khmer-to-Romanized output.
 
 The existing keyboard is primarily Romanized Khmer -> Khmer. A reverse lookup
-is ambiguous, so this module chooses the highest-frequency romanization for a
-known Khmer token and preserves unknown text. It is a transparent baseline,
-not a claim that every Khmer spelling has one unique romanization.
+is ambiguous, so this module segments Khmer text, chooses the highest-frequency
+romanization for known words, and preserves words it cannot map. It is a
+transparent baseline, not a claim that every Khmer spelling has one unique
+romanization.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ from khmer_transliteration.paths import ALL_WORDS_FILE
 
 
 _WHITESPACE_OR_TOKEN = re.compile(r"(\s+)")
-_PUNCTUATION = ",.;:!?()[]{}\"'-"
+_PUNCTUATION = ",.;:!?()[]{}\"'-\u17d4\u17d5\u17d6\u17da\u00ab\u00bb\u201c\u201d\u2018\u2019"
+_CLOSING_PUNCTUATION = ",.;:!?)]}\u17d4\u17d5\u17d6\u17da"
 
 
 @lru_cache(maxsize=1)
@@ -58,18 +60,98 @@ def _romanize_token(token: str, reverse_index: dict[str, str]) -> str:
     core = token[core_start:core_end]
     if core and core in reverse_index:
         return f"{leading}{reverse_index[core]}{trailing}"
+
+    parts = _split_known_compound(core, reverse_index) if core else None
+    if parts:
+        romanized = " ".join(reverse_index[part] for part in parts)
+        return f"{leading}{romanized}{trailing}"
     return token
 
 
+def _split_known_compound(
+    token: str,
+    reverse_index: dict[str, str],
+    *,
+    max_parts: int = 4,
+) -> tuple[str, ...] | None:
+    """Split an unknown compound only when known dictionary words cover it."""
+    if not token:
+        return None
+    try:
+        import regex
+
+        clusters = regex.findall(r"\X", token)
+    except ImportError:
+        clusters = list(token)
+
+    best: list[tuple[str, ...] | None] = [None] * (len(clusters) + 1)
+    best[0] = ()
+    for start in range(len(clusters)):
+        previous = best[start]
+        if previous is None or len(previous) >= max_parts:
+            continue
+        for end in range(start + 1, len(clusters) + 1):
+            word = "".join(clusters[start:end])
+            if word not in reverse_index:
+                continue
+            candidate = (*previous, word)
+            current = best[end]
+            if current is None or (
+                len(candidate), tuple(-len(part) for part in candidate)
+            ) < (len(current), tuple(-len(part) for part in current)):
+                best[end] = candidate
+
+    result = best[-1]
+    return result if result and len(result) >= 2 else None
+
+
+@lru_cache(maxsize=1)
+def _load_word_segmenter():
+    """Load the same Khmer-aware segmenter used by the ASR WER metric."""
+    try:
+        from khmercut.nn import tokenize
+    except ImportError:
+        return None
+    return tokenize
+
+
 def romanize_khmer_text(text: str) -> str:
-    """Return a canonical dictionary-backed Romanized Khmer approximation."""
+    """Return a segmented, dictionary-backed Romanized Khmer approximation.
+
+    Words absent from the dictionary remain in Khmer. Unknown compounds are
+    romanized only when they can be split completely into known dictionary
+    words.
+    """
     normalized = normalize_asr_text(text)
     if not normalized:
         return ""
 
     reverse_index = _load_reverse_index()
-    return "".join(
-        part if part.isspace() else _romanize_token(part, reverse_index)
-        for part in _WHITESPACE_OR_TOKEN.split(normalized)
-        if part
-    )
+    segment = _load_word_segmenter()
+    if segment is None:
+        parts = _WHITESPACE_OR_TOKEN.split(normalized)
+    else:
+        try:
+            parts = segment(normalized)
+        except (OSError, RuntimeError, UnicodeDecodeError):
+            # Keep transcription available if optional word segmentation fails.
+            parts = _WHITESPACE_OR_TOKEN.split(normalized)
+
+    output = ""
+    for part in parts:
+        if not part:
+            continue
+        if part.isspace():
+            if output and not output.endswith(" "):
+                output += " "
+            continue
+        if (
+            output
+            and not output.endswith(" ")
+            and not all(character in _CLOSING_PUNCTUATION for character in part)
+        ):
+            output += " "
+        output += _romanize_token(part, reverse_index)
+
+    return normalize_asr_text(output)
+    
