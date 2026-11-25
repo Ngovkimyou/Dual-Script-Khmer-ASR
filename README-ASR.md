@@ -12,9 +12,10 @@ This project evaluates whether fine-tuning a Khmer-capable speech-recognition
 model on labeled Khmer audio improves transcription quality. It also connects
 speech input to the existing Khmer transliteration keyboard application.
 
-The recognizer outputs Khmer script. The application can show a
-dictionary-based Romanized form as an additional convenience. That Romanized
-output is not a separately trained or evaluated model.
+The recognizer outputs Khmer script. The application also provides a
+best-effort Romanized display using Khmer word segmentation and the existing
+Romanized dictionary. Words absent from the dictionary remain in Khmer. This
+display is not a separately trained or evaluated model.
 
 ## Dataset
 
@@ -86,7 +87,7 @@ the unchanged test set.
 
 - The current training set is small relative to the source dataset.
 - Khmer-aware WER depends on automatic word segmentation, whose boundaries may be imperfect.
-- The Romanized output is dictionary-backed and has not been evaluated as an independent model.
+- Romanized output depends on word segmentation and dictionary coverage; unknown words may remain in Khmer, and the output has not been evaluated as an independent model.
 - The 2,000-row experiment has not completed, so no result is reported for it yet.
 
 ## Setup and project files
@@ -97,12 +98,19 @@ Install the ASR dependencies from the repository root:
 python -m pip install -r requirements-asr.txt
 ```
 
+On Windows, start the application with 
+```powershell
+python -X utf8 -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+so the Khmer word segmenter can read its model
+data correctly.
+
 The fine-tuned checkpoint (approximately 1.26 GB) is distributed separately
 and is not stored in Git. To reproduce local ASR inference, download
 `models/khmer_xlsr_ddd_1000_clean` from the [shared Google Drive ASR folder](https://drive.google.com/drive/folders/1cCC9Bo5iZ3t-rJs6-qrUiopC4rci4t9a?usp=sharing)
 and place it at `models/khmer_xlsr_ddd_1000_clean/`; the application detects
 the model there automatically. Set `KHMER_ASR_MODEL_PATH` only if the model is
-stored elsewhere. Access to the shared Drive folder is required. The
+stored elsewhere. The
 [ASR workflow guide](docs/asr.md) describes the local setup and Vercel
 deployment constraints.
 
@@ -121,3 +129,5 @@ Main code locations:
 - `requirements-asr.txt`: ASR-specific Python dependencies
 - `notebooks/`: dataset preparation, baseline evaluation, and fine-tuning
   workflows
+
+`Generative AI use: ChatGPT/Codex assisted with explaining ASR concepts and metrics, troubleshooting notebook and dataset-access issues, and drafting or revising code and project documentation. The project team reviewed the work and is responsible for the final implementation and interpretation. The audio and transcripts came from the cited dataset; model predictions were produced by the ASR system.`
